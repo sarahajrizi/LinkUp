@@ -3442,7 +3442,173 @@ function SettingsPage({ user, onUserUpdate }: { user: SafeUser | null; onUserUpd
 
 // ─── App Shell ────────────────────────────────────────────────────────────────
 
+// ─── Passport QR Viewer (scanned by nurse / anyone) ──────────────────────────
+
+function PassportViewer({ token }: { token: string }) {
+  const [data, setData] = useState<{ passport: PassportData; scannedAt: string } | null>(null);
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(true);
+  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000/api";
+
+  useEffect(() => {
+    fetch(`${API_URL}/passport/verify?token=${encodeURIComponent(token)}`)
+      .then((r) => r.json())
+      .then((d) => {
+        if (d.error) throw new Error(d.error.message);
+        setData(d);
+      })
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [token]);
+
+  const p = data?.passport;
+  const child = p?.child;
+  const dob = child?.date_of_birth ? new Date(child.date_of_birth) : null;
+  const ageMonths = dob ? Math.floor((Date.now() - dob.getTime()) / (1000 * 60 * 60 * 24 * 30.44)) : 0;
+  const ageLabel = ageMonths >= 24 ? `${Math.floor(ageMonths / 12)} yrs` : `${ageMonths} mo`;
+  const vacCompleted = p?.vaccinations.filter((v) => v.status === "completed").length ?? 0;
+  const vacTotal = p?.vaccinations.length ?? 0;
+  const vacMissed = p?.vaccinations.filter((v) => v.status === "missed").length ?? 0;
+  const riskColor: Record<string, string> = {
+    low: "bg-emerald-100 text-emerald-800 border-emerald-300",
+    moderate: "bg-amber-100 text-amber-800 border-amber-300",
+    high: "bg-orange-100 text-orange-800 border-orange-300",
+    critical: "bg-red-100 text-red-800 border-red-300",
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
+      {/* Verified header bar */}
+      <div className="bg-emerald-600 text-white px-4 py-2 flex items-center justify-center gap-2 text-sm font-semibold">
+        <ShieldCheck className="w-4 h-4" />
+        Verified Health Passport · Kosovo Child Health Platform
+        {data && <span className="ml-4 text-emerald-200 text-xs font-normal">Scanned {new Date(data.scannedAt).toLocaleTimeString()}</span>}
+      </div>
+
+      <div className="max-w-2xl mx-auto px-4 py-6 space-y-5">
+        {loading && (
+          <div className="text-center py-20 text-slate-400">
+            <ScanLine className="w-10 h-10 mx-auto mb-3 animate-pulse" />
+            <p className="text-sm">Verifying passport…</p>
+          </div>
+        )}
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-2xl p-8 text-center">
+            <XCircle className="w-12 h-12 text-red-400 mx-auto mb-3" />
+            <p className="font-bold text-red-800 text-lg">Invalid or Expired QR Code</p>
+            <p className="text-red-600 text-sm mt-1">{error}</p>
+            <p className="text-slate-500 text-xs mt-3">Ask the parent to generate a new QR code from their Health Passport.</p>
+          </div>
+        )}
+
+        {p && child && (
+          <>
+            {/* Identity card */}
+            <div className="rounded-2xl overflow-hidden shadow-lg" style={{ background: "linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #4338CA 100%)" }}>
+              <div className="p-6">
+                <div className="flex items-center gap-2 mb-4">
+                  <span className="text-indigo-300 text-[10px] font-bold uppercase tracking-widest">Republic of Kosovo · Child Health Passport</span>
+                  <ShieldCheck className="w-3.5 h-3.5 text-indigo-300" />
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="w-16 h-16 rounded-2xl bg-white/20 border border-white/30 flex items-center justify-center flex-shrink-0">
+                    <span className="text-white text-2xl font-bold">{child.full_name.split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase()}</span>
+                  </div>
+                  <div>
+                    <h1 className="text-white text-xl font-bold">{child.full_name}</h1>
+                    <p className="text-indigo-200 text-sm">{ageLabel} · {child.gender} · {child.municipality || "Kosovo"}</p>
+                    <p className="text-indigo-300 text-xs font-mono mt-1">ID: {child.id.split("-")[0].toUpperCase()}</p>
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  {[
+                    { label: "Vaccines", value: `${vacCompleted}/${vacTotal}`, alert: vacMissed > 0 },
+                    { label: "Risk", value: p.risk?.level ?? "N/A", alert: ["high","critical"].includes(p.risk?.level ?? "") },
+                    { label: "Visits", value: String(p.recentVisits.length), alert: false },
+                  ].map(({ label, value, alert }) => (
+                    <div key={label} className="bg-white/10 rounded-xl p-3 border border-white/20 text-center">
+                      <p className="text-indigo-200 text-[10px] uppercase tracking-wide">{label}</p>
+                      <p className={`text-lg font-bold capitalize ${alert ? "text-red-300" : "text-white"}`}>{value}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Risk alert banner */}
+            {p.risk && ["high", "critical"].includes(p.risk.level) && (
+              <div className="bg-red-50 border border-red-200 rounded-xl px-4 py-3 flex items-start gap-3">
+                <AlertOctagon className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-red-800 text-sm">Preventive Risk Alert — {p.risk.level.toUpperCase()}</p>
+                  <ul className="mt-1 space-y-0.5">
+                    {p.risk.reasons?.map((r, i) => <li key={i} className="text-xs text-red-700">· {r}</li>)}
+                  </ul>
+                </div>
+              </div>
+            )}
+
+            {/* Vaccinations */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 mb-4">
+                <Syringe className="w-4 h-4 text-indigo-600" /> Vaccination Status
+              </h3>
+              {p.vaccinations.length === 0
+                ? <p className="text-sm text-slate-400">No records</p>
+                : <div className="space-y-2">
+                  {p.vaccinations.map((v, i) => (
+                    <div key={i} className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full flex-shrink-0 ${v.status === "completed" ? "bg-emerald-400" : v.status === "missed" ? "bg-red-400" : "bg-blue-400"}`} />
+                      <span className="text-sm text-slate-700 flex-1">{v.vaccine_name}</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border capitalize ${
+                        v.status === "completed" ? "text-emerald-700 bg-emerald-50 border-emerald-200"
+                        : v.status === "missed" ? "text-red-700 bg-red-50 border-red-200"
+                        : "text-blue-700 bg-blue-50 border-blue-200"
+                      }`}>{v.status}</span>
+                    </div>
+                  ))}
+                </div>}
+            </div>
+
+            {/* Recent visit */}
+            {p.recentVisits[0] && (
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+                <h3 className="font-bold text-slate-800 flex items-center gap-2 mb-3">
+                  <CalendarDays className="w-4 h-4 text-indigo-600" /> Last Home Visit
+                </h3>
+                <p className="text-sm text-slate-700">{new Date(p.recentVisits[0].visited_at).toLocaleDateString()} · Nurse: {p.recentVisits[0].nurse_name}</p>
+                {p.recentVisits[0].notes && <p className="text-xs text-slate-500 mt-2 bg-slate-50 rounded-lg px-3 py-2">{p.recentVisits[0].notes}</p>}
+              </div>
+            )}
+
+            {/* Guardian */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+              <h3 className="font-bold text-slate-800 flex items-center gap-2 mb-3">
+                <User className="w-4 h-4 text-indigo-600" /> Guardian Contact
+              </h3>
+              <div className="space-y-1.5 text-sm">
+                <div className="flex justify-between"><span className="text-slate-500">Name</span><span className="font-medium text-slate-800">{child.parent_name}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Phone</span><span className="font-medium text-slate-800">{child.parent_phone || "—"}</span></div>
+                <div className="flex justify-between"><span className="text-slate-500">Municipality</span><span className="font-medium text-slate-800">{child.municipality || "—"}</span></div>
+              </div>
+            </div>
+
+            <p className="text-center text-xs text-slate-400 pb-4">
+              This passport was verified at {new Date(data!.scannedAt).toLocaleString()} · SAFE Platform Kosovo
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
+  // Check if this is a QR scan verification URL
+  const verifyToken = new URLSearchParams(window.location.search).get("verify");
+  if (verifyToken) return <PassportViewer token={verifyToken} />;
+
   const [activePage, setActivePage] = useState<Page>("landing");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [user, setUser] = useState<SafeUser | null>(() => (getStoredToken() ? getStoredUser() : null));

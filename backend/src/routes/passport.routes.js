@@ -5,13 +5,13 @@ import { requireAuth, requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
+// Public: verify scanned QR token — must be before /:childId to avoid route conflict
+router.get('/verify', asyncHandler(verifyPassport));
+
 // Parent/doctor: get full passport data
 router.get('/:childId', requireAuth, requireRole('parent', 'doctor', 'admin'), asyncHandler(getPassport));
 
 // Parent: generate a signed QR token (15 min TTL)
 router.post('/:childId/token', requireAuth, requireRole('parent', 'doctor', 'admin'), asyncHandler(generatePassportToken));
-
-// Public: verify scanned QR token — no auth required (token is self-contained)
-router.get('/verify', asyncHandler(verifyPassport));
 
 export default router;
