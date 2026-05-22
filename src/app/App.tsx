@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Home, Lock, Heart, Stethoscope, ClipboardList, Activity,
   AlertTriangle, BarChart3, MessageSquare, Settings, Bell,
@@ -8,12 +8,13 @@ import {
   Globe, Eye, EyeOff, AlertCircle,
   ChevronRight, ChevronDown, Zap, Users, MoreHorizontal,
   Building2, Syringe, Info, Check, RefreshCw, MapPin,
-  Star, FileText
+  Star, FileText, Mail
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell
 } from "recharts";
+import { apiRequest, clearSession, getStoredToken, getStoredUser, login, registerAccount, storeSession, type SafeUser } from "./lib/api";
 
 type Page =
   | "landing" | "login" | "parent" | "nurse"
@@ -39,6 +40,24 @@ const navItems: NavItem[] = [
   { id: "messaging", label: "Messaging", icon: MessageSquare, group: "Management" },
   { id: "settings", label: "Settings", icon: Settings, group: "Management" },
 ];
+
+const pagesByRole: Record<SafeUser["role"], Page[]> = {
+  parent: ["parent", "timeline", "messaging", "settings"],
+  doctor: ["nurse", "visit", "timeline", "ai-risk", "messaging", "settings"],
+  admin: ["admin", "ai-risk", "nurse", "messaging", "settings"],
+};
+
+function allowedPagesFor(user: SafeUser | null): Page[] {
+  if (!user) return ["landing", "login"];
+  return pagesByRole[user.role];
+}
+
+function defaultPageFor(user: SafeUser | null): Page {
+  if (!user) return "landing";
+  if (user.role === "parent") return "parent";
+  if (user.role === "doctor") return "nurse";
+  return "admin";
+}
 
 const vaccinationTrend = [
   { month: "Jan", rate: 88 }, { month: "Feb", rate: 89 },
@@ -68,11 +87,34 @@ const growthData = [
   { age: "18m", weight: 11.2, height: 82 },
 ];
 
-const riskDistribution = [
+const aiRiskDistribution = [
   { label: "Low Risk", value: 38420, color: "#10B981" },
   { label: "Medium Risk", value: 7200, color: "#F59E0B" },
   { label: "High Risk", value: 2212, color: "#EF4444" },
 ];
+
+function formatDisplayDate(value?: string | null) {
+  if (!value) return "Not scheduled";
+  return new Date(value).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function initialsFor(name?: string | null) {
+  return (name || "SAFE User")
+    .split(" ")
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0]?.toUpperCase())
+    .join("") || "SU";
+}
+
+function childAgeLabel(dateOfBirth?: string | null) {
+  if (!dateOfBirth) return "Age not set";
+  const dob = new Date(dateOfBirth);
+  const now = new Date();
+  const months = Math.max(0, (now.getFullYear() - dob.getFullYear()) * 12 + now.getMonth() - dob.getMonth());
+  if (months < 24) return `${months} months`;
+  return `${Math.floor(months / 12)} years`;
+}
 
 // ─── Shared UI primitives ────────────────────────────────────────────────────
 
@@ -151,13 +193,17 @@ function VaccineProgress({ completed, total }: { completed: number; total: numbe
 // ─── Sidebar ────────────────────────────────────────────────────────────────
 
 function Sidebar({
-  activePage, setActivePage, open,
+  activePage, setActivePage, open, user, onLogout,
 }: {
   activePage: Page;
   setActivePage: (p: Page) => void;
   open: boolean;
+  user: SafeUser | null;
+  onLogout: () => void;
 }) {
   const groups = ["Explore", "Portals", "Clinical", "Management"];
+  const visiblePages = allowedPagesFor(user);
+  const visibleNavItems = navItems.filter((item) => visiblePages.includes(item.id));
   return (
     <div
       className={`flex-shrink-0 flex flex-col h-full transition-all duration-300 overflow-hidden`}
@@ -180,7 +226,8 @@ function Sidebar({
       {/* Nav */}
       <nav className="flex-1 overflow-y-auto px-3 py-4">
         {groups.map((group) => {
-          const items = navItems.filter((n) => n.group === group);
+          const items = visibleNavItems.filter((n) => n.group === group);
+          if (items.length === 0) return null;
           return (
             <div key={group} className="mb-5">
               <p className="text-indigo-400 text-[10px] font-bold uppercase tracking-widest px-2 mb-1.5">{group}</p>
@@ -210,12 +257,21 @@ function Sidebar({
       {/* User profile */}
       <div className="border-t border-white/10 px-4 py-4 flex items-center gap-3">
         <div className="w-8 h-8 rounded-full bg-indigo-400 flex items-center justify-center flex-shrink-0">
-          <span className="text-white text-xs font-bold">DS</span>
+          <span className="text-white text-xs font-bold">{user?.name?.split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase() || "DS"}</span>
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-white text-xs font-semibold truncate">Demo Session</p>
-          <p className="text-indigo-300 text-[10px] truncate">Kosovo MoH</p>
+          <p className="text-white text-xs font-semibold truncate">{user?.name || "Demo Session"}</p>
+          <p className="text-indigo-300 text-[10px] truncate">{user?.role || "Not signed in"}</p>
         </div>
+        {user && (
+          <button
+            onClick={onLogout}
+            title="Log out"
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-indigo-200 hover:bg-white/10 hover:text-white transition-colors"
+          >
+            <Lock className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -224,24 +280,40 @@ function Sidebar({
 // ─── Top bar ────────────────────────────────────────────────────────────────
 
 function TopBar({
-  activePage, sidebarOpen, setSidebarOpen,
+  activePage, sidebarOpen, setSidebarOpen, user,
 }: {
   activePage: Page;
   sidebarOpen: boolean;
   setSidebarOpen: (v: boolean) => void;
+  user: SafeUser | null;
 }) {
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [showNotifications, setShowNotifications] = useState(false);
   const labels: Record<Page, string> = {
     landing: "Platform Overview",
     login: "Login & Authentication",
-    parent: "Family Portal — Ardit Krasniqi",
-    nurse: "Nurse App — Mirela Berisha",
-    visit: "Home Visit — Krasniqi Family",
+    parent: "Family Portal",
+    nurse: "Provider Dashboard",
+    visit: "Home Visit",
     timeline: "Child Health Timeline",
     "ai-risk": "AI Risk Detection",
-    admin: "Admin Dashboard — Pristina Region",
+    admin: "Admin Dashboard",
     messaging: "Secure Messaging",
     settings: "Settings & Profile",
   };
+
+  useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+    apiRequest<{ notifications: any[] }>("/notifications")
+      .then((data) => setNotifications(data.notifications))
+      .catch(() => setNotifications([]));
+  }, [user, activePage]);
+
+  const unreadCount = notifications.filter((item) => item.status === "unread").length;
+
   return (
     <header className="flex-shrink-0 h-14 bg-white border-b border-black/[0.06] flex items-center px-4 gap-4">
       <button
@@ -254,12 +326,40 @@ function TopBar({
         <p className="text-sm font-semibold text-slate-800">{labels[activePage]}</p>
       </div>
       <div className="flex items-center gap-2">
-        <button className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors relative">
+        <div className="relative">
+        <button
+          onClick={() => setShowNotifications((value) => !value)}
+          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors relative"
+        >
           <Bell className="w-4 h-4 text-slate-500" />
-          <span className="absolute top-1.5 right-1.5 w-1.5 h-1.5 rounded-full bg-red-500" />
+          {unreadCount > 0 && <span className="absolute top-1 right-1 min-w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">{unreadCount}</span>}
         </button>
+        {showNotifications && (
+          <div className="absolute right-0 top-10 w-80 bg-white border border-slate-200 rounded-lg shadow-xl z-50 overflow-hidden">
+            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+              <p className="text-sm font-bold text-slate-800">Notifications</p>
+              <span className="text-[10px] text-slate-400">{notifications.length} total</span>
+            </div>
+            <div className="max-h-80 overflow-y-auto divide-y divide-slate-50">
+              {notifications.length === 0 && <p className="p-4 text-sm text-slate-500">No notifications yet.</p>}
+              {notifications.slice(0, 8).map((item) => (
+                <div key={item.id} className="p-4 hover:bg-slate-50">
+                  <div className="flex items-start gap-2">
+                    <div className={`mt-1 w-2 h-2 rounded-full ${item.status === "unread" ? "bg-indigo-500" : "bg-slate-300"}`} />
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-800">{item.title}</p>
+                      <p className="text-xs text-slate-500 mt-1 leading-relaxed">{item.body}</p>
+                      {item.due_at && <p className="text-[10px] text-slate-400 mt-1">Due {formatDisplayDate(item.due_at)}</p>}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        </div>
         <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
-          <span className="text-indigo-700 text-xs font-bold">MH</span>
+          <span className="text-indigo-700 text-xs font-bold">{initialsFor(user?.name)}</span>
         </div>
       </div>
     </header>
@@ -268,7 +368,7 @@ function TopBar({
 
 // ─── Landing Page ────────────────────────────────────────────────────────────
 
-function LandingPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
+function LandingPage({ setActivePage, user }: { setActivePage: (p: Page) => void; user: SafeUser | null }) {
   const features = [
     { icon: FileText, title: "Digital Child Health Records", desc: "Comprehensive electronic records from birth through adolescence, accessible across all care settings.", color: "indigo" },
     { icon: Syringe, title: "Smart Vaccination Reminders", desc: "Automated, multilingual reminders ensure no child misses a scheduled immunization.", color: "blue" },
@@ -308,13 +408,13 @@ function LandingPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
             </p>
             <div className="flex flex-wrap gap-3">
               <button
-                onClick={() => setActivePage("parent")}
+                onClick={() => setActivePage(user ? defaultPageFor(user) : "login")}
                 className="bg-white text-indigo-700 font-semibold px-6 py-3 rounded-lg hover:bg-indigo-50 transition-colors flex items-center gap-2 text-sm"
               >
                 <Baby className="w-4 h-4" /> Track Child Health
               </button>
               <button
-                onClick={() => setActivePage("nurse")}
+                onClick={() => setActivePage(user?.role === "doctor" ? "nurse" : user?.role === "admin" ? "admin" : "login")}
                 className="bg-indigo-500/30 text-white font-semibold px-6 py-3 rounded-lg hover:bg-indigo-500/40 transition-colors flex items-center gap-2 text-sm border border-white/20"
               >
                 <Stethoscope className="w-4 h-4" /> For Healthcare Providers
@@ -332,7 +432,7 @@ function LandingPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
                 <span className="text-white/40 text-xs ml-2 font-mono">safe.gov.ks — Admin Dashboard</span>
               </div>
               <div className="grid grid-cols-3 gap-2 mb-3">
-                {[["47,832", "Children"], ["91.4%", "Vaccination"], ["612", "Nurses"]].map(([v, l]) => (
+                {[["Live", "Children"], ["API", "Vaccination"], ["SAFE", "Care Teams"]].map(([v, l]) => (
                   <div key={l} className="bg-white/10 rounded-lg p-2.5">
                     <p className="text-white font-bold text-base">{v}</p>
                     <p className="text-indigo-200 text-[10px]">{l}</p>
@@ -371,10 +471,10 @@ function LandingPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
       <section className="bg-white border-b border-slate-100">
         <div className="max-w-6xl mx-auto px-6 py-10 grid grid-cols-2 lg:grid-cols-4 gap-8">
           {[
-            { value: "47,832", label: "Children Monitored", icon: Baby, color: "text-indigo-600" },
-            { value: "91.4%", label: "Vaccination Coverage", icon: Syringe, color: "text-emerald-600" },
-            { value: "38", label: "Municipalities Connected", icon: MapPin, color: "text-blue-600" },
-            { value: "612", label: "Active Nurses", icon: Stethoscope, color: "text-indigo-600" },
+            { value: "Live", label: "Children Monitored", icon: Baby, color: "text-indigo-600" },
+            { value: "API", label: "Vaccination Coverage", icon: Syringe, color: "text-emerald-600" },
+            { value: "SAFE", label: "Municipalities Connected", icon: MapPin, color: "text-blue-600" },
+            { value: "Team", label: "Active Providers", icon: Stethoscope, color: "text-indigo-600" },
           ].map((s) => (
             <div key={s.label} className="text-center">
               <s.icon className={`w-6 h-6 mx-auto mb-2 ${s.color}`} />
@@ -477,12 +577,12 @@ function LandingPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
       <section className="bg-gradient-to-r from-indigo-700 to-indigo-600 py-16">
         <div className="max-w-3xl mx-auto px-6 text-center">
           <h2 className="text-3xl font-bold text-white mb-4">Ready to modernise child health in Kosovo?</h2>
-          <p className="text-indigo-200 mb-8">Join 38 municipalities and 612 nurses already using SAFE to protect the health of 47,832 children.</p>
+          <p className="text-indigo-200 mb-8">Use SAFE with your real child health records, appointments, reminders, and provider dashboards.</p>
           <div className="flex gap-3 justify-center flex-wrap">
             <button onClick={() => setActivePage("login")} className="bg-white text-indigo-700 font-semibold px-7 py-3 rounded-lg hover:bg-indigo-50 transition-colors text-sm">
               Get Started Today
             </button>
-            <button onClick={() => setActivePage("admin")} className="bg-indigo-500/30 border border-white/30 text-white font-semibold px-7 py-3 rounded-lg hover:bg-indigo-500/40 transition-colors text-sm">
+            <button onClick={() => setActivePage(user?.role === "admin" ? "admin" : "login")} className="bg-indigo-500/30 border border-white/30 text-white font-semibold px-7 py-3 rounded-lg hover:bg-indigo-500/40 transition-colors text-sm">
               View Live Dashboard
             </button>
           </div>
@@ -494,12 +594,22 @@ function LandingPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
 
 // ─── Login Page ──────────────────────────────────────────────────────────────
 
-function LoginPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
+function LoginPage({
+  setActivePage,
+  onLogin,
+}: {
+  setActivePage: (p: Page) => void;
+  onLogin: (user: SafeUser) => void;
+}) {
   const [selectedRole, setSelectedRole] = useState<string | null>(null);
   const [step, setStep] = useState<"role" | "phone" | "otp">("role");
   const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("parent@safe.test");
+  const [password, setPassword] = useState("Password123!");
   const [otp, setOtp] = useState(["", "", "", "", "", ""]);
   const [showPhone, setShowPhone] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [authError, setAuthError] = useState("");
 
   const roles = [
     { id: "parent", label: "Parent / Guardian", icon: Heart, desc: "Access your child's health records", color: "emerald" },
@@ -517,6 +627,34 @@ function LoginPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
 
   const destination: Record<string, Page> = {
     parent: "parent", nurse: "nurse", manager: "admin", ministry: "admin",
+  };
+
+  const demoAccounts: Record<string, string> = {
+    parent: "parent@safe.test",
+    nurse: "doctor@safe.test",
+    manager: "admin@safe.test",
+    ministry: "admin@safe.test",
+  };
+
+  const handleRoleSelect = (role: string) => {
+    setSelectedRole(role);
+    setEmail(demoAccounts[role] || "parent@safe.test");
+    setAuthError("");
+  };
+
+  const handleLogin = async () => {
+    if (!selectedRole) return;
+    setIsSubmitting(true);
+    setAuthError("");
+    try {
+      const session = await login(email, password);
+      onLogin(session.user);
+      setActivePage(destination[selectedRole] ?? "parent");
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : "Login failed");
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   return (
@@ -539,7 +677,7 @@ function LoginPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
                 {roles.map((r) => (
                   <button
                     key={r.id}
-                    onClick={() => setSelectedRole(r.id)}
+                    onClick={() => handleRoleSelect(r.id)}
                     className={`p-4 rounded-xl border-2 text-left transition-all ${selectedRole === r.id ? colorMap[r.color] + " border-current" : "border-slate-100 bg-slate-50 hover:border-slate-200"}`}
                   >
                     <r.icon className={`w-5 h-5 mb-2 ${selectedRole === r.id ? "" : "text-slate-400"}`} />
@@ -618,15 +756,22 @@ function LoginPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
                 ))}
               </div>
               <button
-                onClick={() => selectedRole && setActivePage(destination[selectedRole] ?? "parent")}
+                onClick={handleLogin}
+                disabled={isSubmitting}
                 className="w-full bg-indigo-600 text-white font-semibold py-3 rounded-lg hover:bg-indigo-700 transition-colors text-sm mb-3"
               >
-                Verify & Sign In
+                {isSubmitting ? "Signing in..." : "Verify & Sign In"}
               </button>
               <p className="text-xs text-center text-slate-400">Didn't receive it? <button className="text-indigo-600 font-semibold">Resend code</button></p>
             </div>
           )}
         </Card>
+        {authError && (
+          <div className="mt-3 flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg p-3">
+            <AlertCircle className="w-4 h-4 flex-shrink-0" />
+            <span>{authError}</span>
+          </div>
+        )}
 
         <div className="flex items-center justify-center gap-4 mt-5 text-[11px] text-slate-400">
           <span className="flex items-center gap-1"><Shield className="w-3 h-3" /> Secure Login</span>
@@ -640,21 +785,325 @@ function LoginPage({ setActivePage }: { setActivePage: (p: Page) => void }) {
 
 // ─── Parent Dashboard ─────────────────────────────────────────────────────────
 
-function ParentDashboard() {
+function AuthPage({
+  setActivePage,
+  onLogin,
+}: {
+  setActivePage: (p: Page) => void;
+  onLogin: (user: SafeUser) => void;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [role, setRole] = useState<"parent" | "doctor" | "admin">("parent");
+  const [name, setName] = useState("Demo Parent");
+  const [email, setEmail] = useState("parent@safe.test");
+  const [password, setPassword] = useState("Password123!");
+  const [showPassword, setShowPassword] = useState(false);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  const roleOptions = [
+    { id: "parent", label: "Parent", icon: Heart, demoEmail: "parent@safe.test" },
+    { id: "doctor", label: "Doctor", icon: Stethoscope, demoEmail: "doctor@safe.test" },
+    { id: "admin", label: "Admin", icon: Building2, demoEmail: "admin@safe.test" },
+  ] as const;
+
+  const destinationFor = (userRole: SafeUser["role"]): Page => {
+    if (userRole === "parent") return "parent";
+    if (userRole === "doctor") return "nurse";
+    return "admin";
+  };
+
+  const selectRole = (nextRole: typeof role) => {
+    setRole(nextRole);
+    setError("");
+    setMessage("");
+    const demo = roleOptions.find((item) => item.id === nextRole);
+    if (mode === "login" && demo) setEmail(demo.demoEmail);
+    if (mode === "register") setEmail("");
+  };
+
+  const switchMode = (nextMode: "login" | "register") => {
+    setMode(nextMode);
+    setError("");
+    setMessage("");
+    if (nextMode === "login") {
+      const demo = roleOptions.find((item) => item.id === role);
+      setEmail(demo?.demoEmail || "parent@safe.test");
+      setPassword("Password123!");
+    } else {
+      if (role === "admin") setRole("parent");
+      setName("");
+      setEmail("");
+      setPassword("");
+    }
+  };
+
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setIsSubmitting(true);
+    setError("");
+    setMessage("");
+
+    try {
+      const session = mode === "login"
+        ? await login(email, password)
+        : await registerAccount(name, email, password, role === "admin" ? "doctor" : role);
+
+      onLogin(session.user);
+      setMessage(mode === "login" ? "Logged in successfully." : "Account created successfully.");
+      setActivePage(destinationFor(session.user.role));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Authentication failed");
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="min-h-full bg-gradient-to-br from-slate-50 to-indigo-50/30 flex items-center justify-center p-6">
+      <div className="w-full max-w-md">
+        <div className="text-center mb-8">
+          <div className="w-14 h-14 rounded-2xl bg-indigo-700 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-200">
+            <Shield className="w-7 h-7 text-white" />
+          </div>
+          <h1 className="text-2xl font-bold text-slate-900 mb-1">{mode === "login" ? "Sign in to SAFE" : "Create SAFE account"}</h1>
+          <p className="text-slate-500 text-sm">Connected to the Express backend with JWT authentication</p>
+        </div>
+
+        <Card className="p-6">
+          <div className="grid grid-cols-2 gap-1 bg-slate-100 rounded-xl p-1 mb-5">
+            <button onClick={() => switchMode("login")} className={`py-2 rounded-lg text-sm font-semibold ${mode === "login" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500"}`}>
+              Login
+            </button>
+            <button onClick={() => switchMode("register")} className={`py-2 rounded-lg text-sm font-semibold ${mode === "register" ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500"}`}>
+              Sign up
+            </button>
+          </div>
+
+          <div className="grid grid-cols-3 gap-2 mb-5">
+            {roleOptions.map((item) => {
+              const Icon = item.icon;
+              const disabled = mode === "register" && item.id === "admin";
+              return (
+                <button
+                  key={item.id}
+                  disabled={disabled}
+                  onClick={() => selectRole(item.id)}
+                  className={`p-3 rounded-xl border text-center transition-all disabled:opacity-40 ${role === item.id ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200"}`}
+                >
+                  <Icon className="w-4 h-4 mx-auto mb-1" />
+                  <span className="text-xs font-bold">{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <form onSubmit={submit} className="space-y-3">
+            {mode === "register" && (
+              <div className="relative">
+                <User className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Full name" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" required />
+              </div>
+            )}
+
+            <div className="relative">
+              <Mail className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="email@example.com" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" required />
+            </div>
+
+            <div className="relative">
+              <Lock className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input type={showPassword ? "text" : "password"} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Password" className="w-full pl-9 pr-10 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" required />
+              <button type="button" onClick={() => setShowPassword((value) => !value)} className="absolute right-3 top-1/2 -translate-y-1/2">
+                {showPassword ? <EyeOff className="w-4 h-4 text-slate-400" /> : <Eye className="w-4 h-4 text-slate-400" />}
+              </button>
+            </div>
+
+            {error && (
+              <div className="flex items-start gap-2 text-xs text-red-700 bg-red-50 border border-red-100 rounded-lg p-3">
+                <AlertCircle className="w-4 h-4 flex-shrink-0" />
+                <span>{error}</span>
+              </div>
+            )}
+
+            {message && (
+              <div className="flex items-start gap-2 text-xs text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg p-3">
+                <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
+                <span>{message}</span>
+              </div>
+            )}
+
+            <button type="submit" disabled={isSubmitting} className="w-full bg-indigo-600 text-white font-semibold py-3 rounded-lg disabled:opacity-40 hover:bg-indigo-700 transition-colors text-sm">
+              {isSubmitting ? "Please wait..." : mode === "login" ? "Login with backend" : "Create account"}
+            </button>
+          </form>
+
+          {mode === "login" && (
+            <div className="mt-4 text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-3">
+              Demo password for seeded accounts: <span className="font-semibold text-slate-700">Password123!</span>
+            </div>
+          )}
+        </Card>
+      </div>
+    </div>
+  );
+}
+
+type ParentOverviewResponse = {
+  overview: {
+    childrenCount: number;
+    highRiskChildren: number;
+    children: Array<{
+      child: {
+        id: string;
+        full_name: string;
+        date_of_birth: string;
+        gender: string;
+      };
+      riskScore: number;
+      riskBand: string;
+      upcomingCount: number;
+      overdueCount: number;
+      vaccinationCount: number;
+      checkupCount: number;
+      milestoneCount: number;
+    }>;
+  };
+};
+
+type ReminderResponse = {
+  reminders: Array<{
+    type: string;
+    severity: string;
+    dueDate: string;
+    item: Record<string, string>;
+  }>;
+};
+
+type MissedActionsResponse = {
+  missedActions: Array<{
+    type: string;
+    severity: string;
+    dueDate: string;
+    item: Record<string, string>;
+    child: { full_name: string };
+  }>;
+};
+
+type TimelineResponse = {
+  timeline: Array<{
+    id: string;
+    type: string;
+    title: string;
+    status: string;
+    date: string;
+  }>;
+};
+
+type Appointment = {
+  id: string;
+  child_id: string;
+  child_name: string;
+  provider_name?: string;
+  type: string;
+  scheduled_at: string;
+  location?: string;
+  notes?: string;
+  status: string;
+  parent_response?: string;
+  requested_time?: string;
+};
+
+type AppointmentsResponse = {
+  appointments: Appointment[];
+};
+
+function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: () => void }) {
   const [activeTab, setActiveTab] = useState("overview");
-  const tabs = ["overview", "timeline", "messages"];
+  const [overview, setOverview] = useState<ParentOverviewResponse["overview"] | null>(null);
+  const [backendReminders, setBackendReminders] = useState<ReminderResponse["reminders"]>([]);
+  const [backendTimeline, setBackendTimeline] = useState<TimelineResponse["timeline"]>([]);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [missedActions, setMissedActions] = useState<MissedActionsResponse["missedActions"]>([]);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState("");
+  const [newChild, setNewChild] = useState({ fullName: "", dateOfBirth: "", gender: "female" });
+  const [childMessage, setChildMessage] = useState("");
+  const [appointmentMessage, setAppointmentMessage] = useState("");
+  const [selectedChildId, setSelectedChildId] = useState("");
+  const tabs = ["overview", "appointments", "timeline", "messages"];
 
-  const upcomingVaccines = [
-    { name: "MMR (Measles-Mumps-Rubella)", date: "June 12, 2025", status: "upcoming" },
-    { name: "DTaP Booster", date: "August 3, 2025", status: "upcoming" },
-  ];
+  const loadDashboard = async () => {
+    if (!getStoredToken()) return;
+    setLoading(true);
+    setLoadError("");
+    try {
+      const overviewData = await apiRequest<ParentOverviewResponse>("/dashboard/parent/overview");
+      setOverview(overviewData.overview);
+      const remindersData = await apiRequest<ReminderResponse>("/dashboard/reminders/upcoming");
+      setBackendReminders(remindersData.reminders);
+      const appointmentsData = await apiRequest<AppointmentsResponse>("/appointments");
+      setAppointments(appointmentsData.appointments);
+      const missedData = await apiRequest<MissedActionsResponse>("/dashboard/actions/missed");
+      setMissedActions(missedData.missedActions);
 
-  const timelineEvents = [
-    { date: "Apr 15", label: "18-month check-up", type: "checkup", status: "completed", nurse: "Mirela Berisha" },
-    { date: "Mar 2", label: "MMR — 1st dose", type: "vaccine", status: "completed", nurse: "Mirela Berisha" },
-    { date: "Jan 20", label: "Weight & height measurement", type: "milestone", status: "completed", nurse: "Mirela Berisha" },
-    { date: "Dec 5", label: "Vitamin D assessment", type: "checkup", status: "missed", nurse: "Mirela Berisha" },
-  ];
+      const activeChildId = selectedChildId || overviewData.overview.children[0]?.child.id;
+      if (activeChildId && !selectedChildId) setSelectedChildId(activeChildId);
+      if (activeChildId) {
+        const timelineData = await apiRequest<TimelineResponse>(`/dashboard/children/${activeChildId}/timeline`);
+        setBackendTimeline(timelineData.timeline);
+      } else {
+        setBackendTimeline([]);
+      }
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not load dashboard data");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadDashboard();
+  }, [selectedChildId]);
+
+  const createChild = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setChildMessage("");
+    setLoadError("");
+    try {
+      const created = await apiRequest<{ child: { id: string } }>("/children", {
+        method: "POST",
+        body: newChild,
+      });
+      setNewChild({ fullName: "", dateOfBirth: "", gender: "female" });
+      setSelectedChildId(created.child.id);
+      setChildMessage("Child profile created.");
+      await loadDashboard();
+    } catch (error) {
+      setLoadError(error instanceof Error ? error.message : "Could not create child");
+    }
+  };
+
+  const respondToAppointment = async (appointmentId: string, action: "confirm" | "reschedule" | "cancel") => {
+    setAppointmentMessage("");
+    const body = action === "reschedule"
+      ? {
+        action,
+        requestedTime: new Date(Date.now() + 14 * 24 * 60 * 60 * 1000).toISOString(),
+        message: "Parent requested a later appointment time.",
+      }
+      : { action, message: action === "confirm" ? "Parent confirmed attendance." : "Parent cannot attend this appointment." };
+
+    await apiRequest(`/appointments/${appointmentId}/respond`, { method: "PATCH", body });
+    setAppointmentMessage(action === "confirm" ? "Appointment confirmed." : action === "reschedule" ? "New time requested." : "Appointment cancelled.");
+    const data = await apiRequest<AppointmentsResponse>("/appointments");
+    setAppointments(data.appointments);
+  };
+
+  const upcomingVaccines: any[] = [];
+
+  const timelineEvents: any[] = [];
 
   const statusColor: Record<string, string> = {
     completed: "text-emerald-600 bg-emerald-50 border-emerald-100",
@@ -662,27 +1111,67 @@ function ParentDashboard() {
     upcoming: "text-blue-600 bg-blue-50 border-blue-100",
   };
 
+  const childSummary = overview?.children[0];
+  const selectedChildSummary = overview?.children.find((item) => item.child.id === selectedChildId) || childSummary;
+  const child = selectedChildSummary?.child;
+  const childName = child?.full_name || "No child selected";
+  const initials = childName
+    .split(" ")
+    .map((part) => part[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+  const healthScore = selectedChildSummary ? Math.max(0, 100 - selectedChildSummary.riskScore) : 82;
+  const visibleVaccines = backendReminders.length > 0
+    ? backendReminders.filter((item) => item.type === "vaccination").map((item) => ({
+      name: item.item.vaccine_name || "Vaccination",
+      date: item.dueDate,
+      status: item.severity,
+    }))
+    : upcomingVaccines;
+  const visibleTimeline = backendTimeline.length > 0
+    ? backendTimeline.map((event) => ({
+      date: event.date,
+      label: event.title,
+      type: event.type,
+      status: event.status,
+      nurse: "SAFE backend",
+    }))
+    : timelineEvents;
+  const childAppointments = selectedChildId ? appointments.filter((item) => item.child_id === selectedChildId) : appointments;
+  const upcomingAppointments = childAppointments.filter((item) => !["completed", "cancelled", "missed"].includes(item.status));
+  const pastAppointments = childAppointments.filter((item) => ["completed", "cancelled", "missed"].includes(item.status));
+  const nextAppointment = upcomingAppointments[0] || appointments[0];
+  const selectedMissedActions = missedActions.filter((item) => !selectedChildId || item.child?.full_name === childName);
+  const nextReminder = backendReminders.find((item) => !selectedChildId || item.item.child_id === selectedChildId) || backendReminders[0];
+  const vaccinationCompleted = selectedChildSummary?.vaccinationCount
+    ? Math.max(0, selectedChildSummary.vaccinationCount - selectedChildSummary.overdueCount)
+    : 0;
+  const vaccinationTotal = selectedChildSummary?.vaccinationCount || 0;
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       {/* Child card */}
       <div className="bg-gradient-to-r from-indigo-700 to-indigo-600 rounded-2xl p-6 mb-6 text-white shadow-lg shadow-indigo-200">
         <div className="flex items-center gap-4">
           <div className="w-16 h-16 rounded-2xl bg-white/20 flex items-center justify-center text-2xl font-black">
-            AK
+            {initials || "AK"}
           </div>
           <div className="flex-1">
-            <h2 className="text-xl font-bold">Ardit Krasniqi</h2>
-            <p className="text-indigo-200 text-sm">Born November 12, 2023 · 18 months</p>
+            <h2 className="text-xl font-bold">{childName}</h2>
+            <p className="text-indigo-200 text-sm">{child ? `Born ${new Date(child.date_of_birth).toLocaleDateString()} · ${child.gender}` : "No child selected"}</p>
             <div className="flex gap-2 mt-2">
               <Badge variant="default">
-                <span className="text-indigo-100 text-[10px] font-semibold">Health Score: 82/100</span>
+                <span className="text-indigo-100 text-[10px] font-semibold">Health Score: {healthScore}/100</span>
               </Badge>
+              {loading && <Badge variant="info">Loading backend data</Badge>}
+              {loadError && <Badge variant="danger">Backend offline</Badge>}
             </div>
           </div>
           <div className="text-right hidden sm:block">
-            <p className="text-indigo-200 text-xs">Assigned Nurse</p>
-            <p className="font-semibold text-sm">Mirela Berisha</p>
-            <p className="text-indigo-200 text-xs">Pristina Zone 3</p>
+            <p className="text-indigo-200 text-xs">Signed in as</p>
+            <p className="font-semibold text-sm">{user?.name || "Demo Session"}</p>
+            <button onClick={onLogout} className="text-indigo-200 text-xs hover:text-white">Sign out</button>
           </div>
         </div>
       </div>
@@ -700,15 +1189,107 @@ function ParentDashboard() {
         ))}
       </div>
 
+      {overview && (
+        <Card className="p-5 mb-6">
+          <div className="flex flex-col md:flex-row md:items-start gap-5">
+            <div>
+              <div className="flex items-start gap-3 mb-3">
+                <Baby className="w-5 h-5 text-indigo-600 mt-0.5" />
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800">My Children</h3>
+                  <p className="text-xs text-slate-500">Select a child profile or add another child.</p>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {overview.children.map((summary) => (
+                  <button
+                    key={summary.child.id}
+                    onClick={() => setSelectedChildId(summary.child.id)}
+                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                      selectedChildId === summary.child.id
+                        ? "bg-indigo-600 text-white border-indigo-600"
+                        : "bg-slate-50 text-slate-600 border-slate-100 hover:border-indigo-200"
+                    }`}
+                  >
+                    {summary.child.full_name}
+                  </button>
+                ))}
+                {overview.children.length === 0 && <p className="text-xs text-slate-500">No child profiles yet.</p>}
+              </div>
+            </div>
+            <form onSubmit={createChild} className="grid md:grid-cols-4 gap-3 flex-1">
+              <input
+                value={newChild.fullName}
+                onChange={(event) => setNewChild((value) => ({ ...value, fullName: event.target.value }))}
+                placeholder="Full name"
+                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
+                required
+              />
+              <input
+                type="date"
+                value={newChild.dateOfBirth}
+                onChange={(event) => setNewChild((value) => ({ ...value, dateOfBirth: event.target.value }))}
+                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
+                required
+              />
+              <select
+                value={newChild.gender}
+                onChange={(event) => setNewChild((value) => ({ ...value, gender: event.target.value }))}
+                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 bg-white"
+              >
+                <option value="female">Female</option>
+                <option value="male">Male</option>
+                <option value="other">Other</option>
+              </select>
+              <button className="bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700">
+                Add child
+              </button>
+            </form>
+          </div>
+          {childMessage && <p className="text-xs text-emerald-600 font-semibold mt-3">{childMessage}</p>}
+        </Card>
+      )}
+
       {activeTab === "overview" && (
         <div className="grid lg:grid-cols-3 gap-5">
           {/* Left column */}
           <div className="lg:col-span-2 space-y-5">
+            {nextAppointment && (
+              <Card className="p-5 border-indigo-100">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <p className="text-xs font-semibold text-indigo-600 uppercase tracking-wider mb-1">Next Appointment</p>
+                    <h3 className="text-base font-bold text-slate-900 capitalize">{nextAppointment.type.replace("_", " ")}</h3>
+                    <p className="text-sm text-slate-500 mt-1">
+                      {new Date(nextAppointment.scheduled_at).toLocaleString()} · {nextAppointment.location || "Location pending"}
+                    </p>
+                    <p className="text-xs text-slate-500 mt-2">{nextAppointment.notes}</p>
+                  </div>
+                  <Badge variant={nextAppointment.status === "confirmed" ? "success" : nextAppointment.status === "missed" ? "danger" : "warning"}>
+                    {nextAppointment.status.replace("_", " ")}
+                  </Badge>
+                </div>
+                {nextAppointment.status === "scheduled" && (
+                  <div className="flex flex-wrap gap-2 mt-4">
+                    <button onClick={() => respondToAppointment(nextAppointment.id, "confirm")} className="px-3 py-2 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold hover:bg-emerald-100">
+                      Confirm
+                    </button>
+                    <button onClick={() => respondToAppointment(nextAppointment.id, "reschedule")} className="px-3 py-2 rounded-lg bg-amber-50 text-amber-700 text-xs font-semibold hover:bg-amber-100">
+                      Request new time
+                    </button>
+                    <button onClick={() => respondToAppointment(nextAppointment.id, "cancel")} className="px-3 py-2 rounded-lg bg-red-50 text-red-700 text-xs font-semibold hover:bg-red-100">
+                      Cannot attend
+                    </button>
+                  </div>
+                )}
+                {appointmentMessage && <p className="text-xs text-emerald-600 font-semibold mt-3">{appointmentMessage}</p>}
+              </Card>
+            )}
             <Card className="p-5">
-              <VaccineProgress completed={7} total={12} />
+              <VaccineProgress completed={vaccinationCompleted} total={Math.max(vaccinationTotal, 1)} />
               <div className="mt-5 space-y-2">
                 <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Upcoming Vaccinations</p>
-                {upcomingVaccines.map((v) => (
+                {visibleVaccines.map((v) => (
                   <div key={v.name} className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg border border-blue-100">
                     <Syringe className="w-4 h-4 text-blue-500 flex-shrink-0" />
                     <div className="flex-1 min-w-0">
@@ -769,7 +1350,13 @@ function ParentDashboard() {
                 <AlertTriangle className="w-4 h-4 text-amber-500" />
                 <p className="text-xs font-bold text-slate-700">AI Preventive Insight</p>
               </div>
-              <p className="text-xs text-slate-600 leading-relaxed">Ardit is due for a dental assessment at 18 months. Untreated early decay can affect speech development. Schedule with your paediatrician.</p>
+              <p className="text-xs text-slate-600 leading-relaxed">
+                {nextReminder
+                  ? `${childName} has an upcoming ${nextReminder.type} due on ${new Date(nextReminder.dueDate).toLocaleDateString()}.`
+                  : selectedMissedActions[0]
+                    ? `${childName} has missed or delayed care that needs follow-up.`
+                    : `${childName} currently has no urgent preventive care alerts.`}
+              </p>
               <button className="mt-3 text-xs text-indigo-600 font-semibold hover:underline">Learn more →</button>
             </Card>
 
@@ -778,11 +1365,11 @@ function ParentDashboard() {
               <div className="space-y-2">
                 <div className="flex items-start gap-2 p-2.5 bg-amber-50 rounded-lg border border-amber-100">
                   <Clock className="w-3.5 h-3.5 text-amber-500 mt-0.5 flex-shrink-0" />
-                  <p className="text-xs text-amber-700">Nurse visit pending confirmation — June 5</p>
+                  <p className="text-xs text-amber-700">{nextAppointment ? `${nextAppointment.type.replace("_", " ")} appointment · ${nextAppointment.status.replace("_", " ")}` : "No pending appointment"}</p>
                 </div>
                 <div className="flex items-start gap-2 p-2.5 bg-red-50 rounded-lg border border-red-100">
                   <XCircle className="w-3.5 h-3.5 text-red-500 mt-0.5 flex-shrink-0" />
-                  <p className="text-xs text-red-700">Vitamin D check overdue by 47 days</p>
+                  <p className="text-xs text-red-700">{selectedMissedActions[0] ? `${selectedMissedActions[0].type} ${selectedMissedActions[0].severity} · due ${new Date(selectedMissedActions[0].dueDate).toLocaleDateString()}` : "No overdue care"}</p>
                 </div>
               </div>
             </Card>
@@ -790,10 +1377,69 @@ function ParentDashboard() {
         </div>
       )}
 
+      {activeTab === "appointments" && (
+        <div className="grid lg:grid-cols-2 gap-5">
+          <Card className="p-5">
+            <h3 className="text-sm font-bold text-slate-800 mb-4">Upcoming Appointments</h3>
+            <div className="space-y-3">
+              {upcomingAppointments.length === 0 && <p className="text-sm text-slate-500">No upcoming appointments.</p>}
+              {upcomingAppointments.map((appointment) => (
+                <div key={appointment.id} className="p-3 rounded-xl border border-slate-100 bg-slate-50">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-bold text-slate-800 capitalize">{appointment.type.replace("_", " ")}</p>
+                      <p className="text-xs text-slate-500">{new Date(appointment.scheduled_at).toLocaleString()}</p>
+                      <p className="text-xs text-slate-500 mt-1">{appointment.location}</p>
+                    </div>
+                    <Badge variant={appointment.status === "confirmed" ? "success" : appointment.status === "reschedule_requested" ? "warning" : "info"}>
+                      {appointment.status.replace("_", " ")}
+                    </Badge>
+                  </div>
+                  {appointment.notes && <p className="text-xs text-slate-600 mt-2">{appointment.notes}</p>}
+                  {appointment.status === "scheduled" && (
+                    <div className="flex flex-wrap gap-2 mt-3">
+                      <button onClick={() => respondToAppointment(appointment.id, "confirm")} className="px-3 py-1.5 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold">
+                        Confirm
+                      </button>
+                      <button onClick={() => respondToAppointment(appointment.id, "reschedule")} className="px-3 py-1.5 rounded-lg bg-amber-50 text-amber-700 text-xs font-semibold">
+                        Request new time
+                      </button>
+                      <button onClick={() => respondToAppointment(appointment.id, "cancel")} className="px-3 py-1.5 rounded-lg bg-red-50 text-red-700 text-xs font-semibold">
+                        Cannot attend
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <h3 className="text-sm font-bold text-slate-800 mb-4">Past Appointments</h3>
+            <div className="space-y-3">
+              {pastAppointments.length === 0 && <p className="text-sm text-slate-500">No past appointments yet.</p>}
+              {pastAppointments.map((appointment) => (
+                <div key={appointment.id} className="p-3 rounded-xl border border-slate-100">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-800 capitalize">{appointment.type.replace("_", " ")}</p>
+                      <p className="text-xs text-slate-500">{new Date(appointment.scheduled_at).toLocaleString()}</p>
+                    </div>
+                    <Badge variant={appointment.status === "missed" ? "danger" : appointment.status === "completed" ? "success" : "muted"}>
+                      {appointment.status.replace("_", " ")}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
       {activeTab === "timeline" && (
         <div className="relative pl-6 space-y-1">
           <div className="absolute left-2 top-0 bottom-0 w-0.5 bg-slate-100" />
-          {timelineEvents.map((ev, i) => (
+          {visibleTimeline.map((ev, i) => (
             <div key={i} className="relative mb-4">
               <div className={`absolute -left-4 top-3 w-3 h-3 rounded-full border-2 border-white ${ev.status === "completed" ? "bg-emerald-500" : ev.status === "missed" ? "bg-red-500" : "bg-blue-500"}`} />
               <Card className="p-4">
@@ -816,7 +1462,7 @@ function ParentDashboard() {
         <Card className="p-6 text-center">
           <MessageSquare className="w-10 h-10 text-indigo-200 mx-auto mb-3" />
           <p className="text-sm font-semibold text-slate-700">Message your nurse directly</p>
-          <p className="text-xs text-slate-500 mt-1 mb-4">Mirela Berisha · Pristina Zone 3</p>
+          <p className="text-xs text-slate-500 mt-1 mb-4">Care team</p>
           <button className="bg-indigo-600 text-white px-5 py-2.5 rounded-lg text-sm font-semibold hover:bg-indigo-700 transition-colors">
             Open Conversation
           </button>
@@ -828,17 +1474,65 @@ function ParentDashboard() {
 
 // ─── Nurse Dashboard ──────────────────────────────────────────────────────────
 
-function NurseDashboard() {
+function NurseDashboard({ user }: { user: SafeUser | null }) {
   const [offlineMode] = useState(false);
-  const visits = [
-    { time: "08:30", family: "Krasniqi", child: "Ardit, 18mo", address: "Rruga Dardania 14", status: "completed", risk: "low" },
-    { time: "10:00", family: "Berisha", child: "Lena, 6mo", address: "Rruga UÇK 7", status: "completed", risk: "medium" },
-    { time: "11:30", family: "Gashi", child: "Besnik, 2mo", address: "Rruga Nëna Terezë 22", status: "completed", risk: "high" },
-    { time: "13:15", family: "Hoxha", child: "Fjolla, 12mo", address: "Rruga Ismail Qemali 5", status: "in-progress", risk: "low" },
-    { time: "14:45", family: "Osmani", child: "Valdrin, 9mo", address: "Rruga Agim Ramadani 3", status: "pending", risk: "low" },
-    { time: "16:00", family: "Rama", child: "Blerta, 4mo", address: "Rruga Fehmi Agani 11", status: "pending", risk: "medium" },
-    { time: "17:00", family: "Mustafa", child: "Lirim, 15mo", address: "Rruga Bill Clinton 8", status: "overdue", risk: "high" },
-  ];
+  const [apiVisits, setApiVisits] = useState<any[]>([]);
+  const [appointments, setAppointments] = useState<Appointment[]>([]);
+  const [children, setChildren] = useState<any[]>([]);
+  const [visitError, setVisitError] = useState("");
+  const [appointmentDraft, setAppointmentDraft] = useState({ childId: "", type: "vaccination", scheduledAt: "", location: "Pristina Family Medicine Center", notes: "" });
+  const [appointmentNotice, setAppointmentNotice] = useState("");
+  const fallbackVisits: any[] = [];
+
+  useEffect(() => {
+    apiRequest<{ visits: any[] }>("/visits")
+      .then((data) => setApiVisits(data.visits))
+      .catch((error) => setVisitError(error instanceof Error ? error.message : "Could not load visits"));
+    apiRequest<AppointmentsResponse>("/appointments")
+      .then((data) => setAppointments(data.appointments))
+      .catch(() => setAppointments([]));
+    apiRequest<{ children: any[] }>("/children")
+      .then((data) => {
+        setChildren(data.children);
+        if (data.children[0]) setAppointmentDraft((draft) => ({ ...draft, childId: data.children[0].id }));
+      })
+      .catch(() => setChildren([]));
+  }, []);
+
+  const visits = apiVisits.length > 0
+    ? apiVisits.map((visit) => ({
+      id: visit.id,
+      time: new Date(visit.scheduled_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      family: visit.child_name?.split(" ").slice(-1)[0] || "Family",
+      child: visit.child_name || "Child",
+      address: visit.location || "Home visit location",
+      status: visit.status === "scheduled" ? "pending" : visit.status.replace("_", "-"),
+      risk: visit.risk_notes ? "high" : visit.status === "missed" ? "high" : "low",
+    }))
+    : fallbackVisits;
+
+  const updateVisitStatus = async (visitId: string | undefined, status: string) => {
+    if (!visitId) return;
+    await apiRequest(`/visits/${visitId}`, {
+      method: "PATCH",
+      body: { status: status === "in-progress" ? "in_progress" : status, completedAt: status === "completed" ? new Date().toISOString() : undefined },
+    });
+    const data = await apiRequest<{ visits: any[] }>("/visits");
+    setApiVisits(data.visits);
+  };
+
+  const createAppointment = async (event: React.FormEvent) => {
+    event.preventDefault();
+    setAppointmentNotice("");
+    await apiRequest("/appointments", {
+      method: "POST",
+      body: appointmentDraft,
+    });
+    setAppointmentNotice("Appointment scheduled and parent notified.");
+    setAppointmentDraft((draft) => ({ ...draft, scheduledAt: "", notes: "" }));
+    const data = await apiRequest<AppointmentsResponse>("/appointments");
+    setAppointments(data.appointments);
+  };
 
   const statusStyles: Record<string, string> = {
     completed: "text-emerald-700 bg-emerald-50 border-emerald-100",
@@ -861,8 +1555,9 @@ function NurseDashboard() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900">Good morning, Mirela</h1>
-          <p className="text-slate-500 text-sm">Thursday, May 22, 2025 · Pristina Zone 3</p>
+          <h1 className="text-2xl font-bold text-slate-900">Good morning, {user?.name?.split(" ")[0] || "Provider"}</h1>
+          {visitError && <p className="text-xs text-red-500 mt-1">{visitError}</p>}
+          <p className="text-slate-500 text-sm">{new Date().toLocaleDateString()} · {user?.municipality || "Care team"}</p>
         </div>
         <div className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-semibold ${offlineMode ? "bg-red-50 text-red-700 border border-red-100" : "bg-emerald-50 text-emerald-700 border border-emerald-100"}`}>
           {offlineMode ? <WifiOff className="w-3.5 h-3.5" /> : <Wifi className="w-3.5 h-3.5" />}
@@ -919,13 +1614,90 @@ function NurseDashboard() {
               <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${statusStyles[v.status]}`}>
                 {v.status.replace("-", " ")}
               </span>
-              <button className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-semibold hover:bg-indigo-100 transition-colors flex-shrink-0">
+              <button
+                onClick={() => updateVisitStatus(v.id, v.status === "completed" ? "completed" : "in-progress")}
+                className="px-3 py-1.5 bg-indigo-50 text-indigo-700 rounded-lg text-xs font-semibold hover:bg-indigo-100 transition-colors flex-shrink-0"
+              >
                 {v.status === "completed" ? "Review" : "Start Visit"}
               </button>
             </div>
           ))}
         </div>
       </Card>
+
+      <div className="grid lg:grid-cols-2 gap-5 mt-6">
+        <Card className="p-5">
+          <h3 className="text-sm font-bold text-slate-800 mb-4">Schedule Appointment</h3>
+          <form onSubmit={createAppointment} className="space-y-3">
+            <select
+              value={appointmentDraft.childId}
+              onChange={(event) => setAppointmentDraft((draft) => ({ ...draft, childId: event.target.value }))}
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white"
+              required
+            >
+              {children.map((child) => (
+                <option key={child.id} value={child.id}>{child.full_name}</option>
+              ))}
+            </select>
+            <div className="grid grid-cols-2 gap-3">
+              <select
+                value={appointmentDraft.type}
+                onChange={(event) => setAppointmentDraft((draft) => ({ ...draft, type: event.target.value }))}
+                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white"
+              >
+                <option value="vaccination">Vaccination</option>
+                <option value="checkup">Check-up</option>
+                <option value="home_visit">Home visit</option>
+                <option value="dental">Dental</option>
+                <option value="other">Other</option>
+              </select>
+              <input
+                type="datetime-local"
+                value={appointmentDraft.scheduledAt}
+                onChange={(event) => setAppointmentDraft((draft) => ({ ...draft, scheduledAt: event.target.value }))}
+                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm"
+                required
+              />
+            </div>
+            <input
+              value={appointmentDraft.location}
+              onChange={(event) => setAppointmentDraft((draft) => ({ ...draft, location: event.target.value }))}
+              placeholder="Location"
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm"
+            />
+            <textarea
+              value={appointmentDraft.notes}
+              onChange={(event) => setAppointmentDraft((draft) => ({ ...draft, notes: event.target.value }))}
+              placeholder="Notes for parent"
+              className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm min-h-20"
+            />
+            <button className="w-full bg-indigo-600 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-indigo-700">
+              Schedule and notify parent
+            </button>
+            {appointmentNotice && <p className="text-xs text-emerald-600 font-semibold">{appointmentNotice}</p>}
+          </form>
+        </Card>
+
+        <Card className="p-5">
+          <h3 className="text-sm font-bold text-slate-800 mb-4">Appointment Responses</h3>
+          <div className="space-y-3">
+            {appointments.slice(0, 5).map((appointment) => (
+              <div key={appointment.id} className="p-3 rounded-xl bg-slate-50 border border-slate-100">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">{appointment.child_name}</p>
+                    <p className="text-xs text-slate-500 capitalize">{appointment.type.replace("_", " ")} · {new Date(appointment.scheduled_at).toLocaleString()}</p>
+                  </div>
+                  <Badge variant={appointment.status === "confirmed" ? "success" : appointment.status === "reschedule_requested" ? "warning" : appointment.status === "missed" ? "danger" : "info"}>
+                    {appointment.status.replace("_", " ")}
+                  </Badge>
+                </div>
+                {appointment.parent_response && <p className="text-xs text-slate-600 mt-2">{appointment.parent_response}</p>}
+              </div>
+            ))}
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
@@ -1101,75 +1873,111 @@ function HomeVisitForm() {
 // ─── Child Timeline ───────────────────────────────────────────────────────────
 
 function ChildTimeline() {
+  return <LiveChildTimeline />;
+}
+
+function LiveChildTimeline() {
   const [filter, setFilter] = useState("all");
+  const [children, setChildren] = useState<any[]>([]);
+  const [selectedChildId, setSelectedChildId] = useState("");
+  const [events, setEvents] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const filters = ["all", "vaccinations", "check-ups", "milestones", "missed"];
 
-  const events = [
-    { date: "May 15, 2025", label: "18-month developmental check-up", type: "check-ups", status: "completed", nurse: "Mirela Berisha", detail: "Height: 82cm · Weight: 11.2kg · All milestones met" },
-    { date: "Mar 2, 2025", label: "MMR — 1st dose administered", type: "vaccinations", status: "completed", nurse: "Mirela Berisha", detail: "Lot: KSV-4421 · No adverse reactions noted" },
-    { date: "Jan 20, 2025", label: "First steps milestone confirmed", type: "milestones", status: "completed", nurse: "Mirela Berisha", detail: "Parent-reported and nurse-verified at 13 months" },
-    { date: "Dec 5, 2024", label: "Vitamin D assessment overdue", type: "missed", status: "missed", nurse: "—", detail: "Scheduled but family was unavailable. Rescheduled for Jan" },
-    { date: "Nov 12, 2024", label: "12-month developmental check-up", type: "check-ups", status: "completed", nurse: "Mirela Berisha", detail: "Height: 75cm · Weight: 9.8kg" },
-    { date: "Sep 4, 2024", label: "DTaP — 3rd dose", type: "vaccinations", status: "completed", nurse: "Mirela Berisha", detail: "Lot: KSV-3819" },
-    { date: "Jun 12, 2025", label: "MMR — 2nd dose scheduled", type: "vaccinations", status: "upcoming", nurse: "Mirela Berisha", detail: "Reminder sent to family via SMS" },
-  ];
+  useEffect(() => {
+    apiRequest<{ children: any[] }>("/children")
+      .then((data) => {
+        setChildren(data.children);
+        setSelectedChildId(data.children[0]?.id || "");
+      })
+      .catch(() => setChildren([]));
+  }, []);
 
-  const filtered = filter === "all" ? events : events.filter((e) => e.type === filter || (filter === "missed" && e.status === "missed"));
+  useEffect(() => {
+    if (!selectedChildId) {
+      setEvents([]);
+      setLoading(false);
+      return;
+    }
+    setLoading(true);
+    apiRequest<{ timeline: any[] }>(`/dashboard/children/${selectedChildId}/timeline`)
+      .then((data) => setEvents(data.timeline))
+      .catch(() => setEvents([]))
+      .finally(() => setLoading(false));
+  }, [selectedChildId]);
+
+  const child = children.find((item) => item.id === selectedChildId);
+  const timeline = events.map((event) => ({
+    date: formatDisplayDate(event.date || event.scheduled_date || event.completed_date),
+    label: event.title || event.vaccine_name || event.checkup_type || event.name || "Health event",
+    type: event.type === "checkup" ? "check-ups" : event.type === "vaccination" ? "vaccinations" : event.type || "milestones",
+    status: event.status || "completed",
+    detail: event.notes || event.description || event.provider_name || "Recorded in SAFE",
+  }));
+  const filtered = filter === "all"
+    ? timeline
+    : timeline.filter((event) => event.type === filter || (filter === "missed" && ["missed", "delayed", "overdue"].includes(event.status)));
 
   const dotColor: Record<string, string> = {
     completed: "bg-emerald-500 border-emerald-200",
     missed: "bg-red-500 border-red-200",
-    upcoming: "bg-blue-400 border-blue-200",
+    delayed: "bg-red-500 border-red-200",
+    overdue: "bg-red-500 border-red-200",
+    pending: "bg-blue-400 border-blue-200",
+    scheduled: "bg-blue-400 border-blue-200",
   };
 
   return (
     <div className="p-6 max-w-3xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-start justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Ardit Krasniqi — Health Timeline</h1>
-          <p className="text-sm text-slate-500">All health events from birth · Born Nov 12, 2023</p>
+          <h1 className="text-xl font-bold text-slate-900">{child?.full_name || "Child Health Timeline"}</h1>
+          <p className="text-sm text-slate-500">
+            {child ? `${childAgeLabel(child.date_of_birth)} - Born ${formatDisplayDate(child.date_of_birth)}` : "Add a child profile to see health events"}
+          </p>
         </div>
-        <div className="flex gap-2 text-xs">
-          <div className="flex items-center gap-1 text-emerald-600"><span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />Completed</div>
-          <div className="flex items-center gap-1 text-red-600"><span className="w-2.5 h-2.5 rounded-full bg-red-400" />Missed</div>
-          <div className="flex items-center gap-1 text-blue-600"><span className="w-2.5 h-2.5 rounded-full bg-blue-400" />Scheduled</div>
-        </div>
+        {children.length > 0 && (
+          <select
+            value={selectedChildId}
+            onChange={(event) => setSelectedChildId(event.target.value)}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-indigo-300"
+          >
+            {children.map((item) => (
+              <option key={item.id} value={item.id}>{item.full_name}</option>
+            ))}
+          </select>
+        )}
       </div>
 
-      {/* Filter chips */}
       <div className="flex gap-2 mb-6 flex-wrap">
-        {filters.map((f) => (
+        {filters.map((item) => (
           <button
-            key={f}
-            onClick={() => setFilter(f)}
-            className={`px-4 py-1.5 rounded-full text-xs font-semibold capitalize transition-all border ${filter === f ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-500 border-slate-200 hover:border-indigo-200"}`}
+            key={item}
+            onClick={() => setFilter(item)}
+            className={`px-4 py-1.5 rounded-full text-xs font-semibold capitalize transition-all border ${filter === item ? "bg-indigo-600 text-white border-indigo-600" : "bg-white text-slate-500 border-slate-200 hover:border-indigo-200"}`}
           >
-            {f}
+            {item}
           </button>
         ))}
       </div>
 
-      {/* Timeline */}
       <div className="relative pl-8">
         <div className="absolute left-3 top-0 bottom-0 w-0.5 bg-slate-100" />
         <div className="space-y-3">
-          {filtered.sort((a, b) => {
-            const order = { upcoming: 0, completed: 1, missed: 2 };
-            return (order[a.status as keyof typeof order] ?? 1) - (order[b.status as keyof typeof order] ?? 1);
-          }).map((ev, i) => (
-            <div key={i} className="relative">
-              <div className={`absolute -left-[21px] top-4 w-3.5 h-3.5 rounded-full border-2 border-white ${dotColor[ev.status]}`} />
+          {loading && <Card className="p-4 text-sm text-slate-500">Loading timeline...</Card>}
+          {!loading && filtered.length === 0 && <Card className="p-4 text-sm text-slate-500">No health events found for this filter.</Card>}
+          {filtered.map((event, index) => (
+            <div key={`${event.label}-${index}`} className="relative">
+              <div className={`absolute -left-[21px] top-4 w-3.5 h-3.5 rounded-full border-2 border-white ${dotColor[event.status] || "bg-slate-400 border-slate-200"}`} />
               <Card className="p-4 hover:shadow-md transition-shadow">
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-0.5">
-                      <p className="text-sm font-bold text-slate-900">{ev.label}</p>
-                    </div>
-                    <p className="text-xs text-slate-500">{ev.date} · {ev.nurse}</p>
-                    <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{ev.detail}</p>
+                    <p className="text-sm font-bold text-slate-900">{event.label}</p>
+                    <p className="text-xs text-slate-500">{event.date}</p>
+                    <p className="text-xs text-slate-500 mt-1.5 leading-relaxed">{event.detail}</p>
                   </div>
-                  <Badge variant={ev.status === "completed" ? "success" : ev.status === "missed" ? "danger" : "info"}>
-                    {ev.status}
+                  <Badge variant={["missed", "delayed", "overdue"].includes(event.status) ? "danger" : event.status === "completed" ? "success" : "info"}>
+                    {event.status}
                   </Badge>
                 </div>
               </Card>
@@ -1181,32 +1989,58 @@ function ChildTimeline() {
   );
 }
 
-// ─── AI Risk Detection Dashboard ──────────────────────────────────────────────
-
 function AIRiskDashboard() {
-  const highRiskChildren = [
-    { name: "Lirim Mustafa", age: "15mo", score: 87, reason: "Missed 3 vaccinations + underweight", municipality: "Mitrovica", lastVisit: "42 days ago" },
-    { name: "Sara Bajraktari", age: "8mo", score: 81, reason: "Low birth weight + no follow-up nurse visit", municipality: "Mitrovica North", lastVisit: "67 days ago" },
-    { name: "Besnik Gashi", age: "2mo", score: 74, reason: "Premature birth, incomplete vaccination schedule", municipality: "Pristina", lastVisit: "11 days ago" },
-    { name: "Vlera Kelmendi", age: "6mo", score: 69, reason: "No breastfeeding, maternal health risk factors", municipality: "Gjakova", lastVisit: "28 days ago" },
-    { name: "Donat Rexhepi", age: "11mo", score: 63, reason: "Overdue DTaP and developmental check-up", municipality: "Ferizaj", lastVisit: "35 days ago" },
-  ];
+  const [riskAlerts, setRiskAlerts] = useState<any[]>([]);
+  const [riskMessage, setRiskMessage] = useState("");
+  const highRiskChildren: any[] = [];
 
-  const heatmapMunicipalities = [
-    { name: "Mitrovica", risk: "critical", children: 4700, highRisk: 312 },
-    { name: "Peja", risk: "high", children: 4900, highRisk: 198 },
-    { name: "Gjilan", risk: "high", children: 5100, highRisk: 174 },
-    { name: "Ferizaj", risk: "medium", children: 4100, highRisk: 121 },
-    { name: "Gjakova", risk: "medium", children: 3800, highRisk: 89 },
-    { name: "Prizren", risk: "low", children: 8200, highRisk: 67 },
-    { name: "Pristina", risk: "low", children: 12400, highRisk: 54 },
-  ];
+  const heatmapMunicipalities: any[] = [];
 
   const riskColor: Record<string, string> = {
     critical: "bg-red-100 border-red-300 text-red-800",
     high: "bg-orange-100 border-orange-300 text-orange-800",
     medium: "bg-amber-100 border-amber-300 text-amber-800",
     low: "bg-emerald-100 border-emerald-300 text-emerald-800",
+  };
+
+  useEffect(() => {
+    apiRequest<{ alerts: any[] }>("/risk/alerts")
+      .then((data) => setRiskAlerts(data.alerts))
+      .catch(() => setRiskAlerts([]));
+  }, []);
+
+  const visibleHighRiskChildren = riskAlerts.length > 0
+    ? riskAlerts.filter((item) => item.score >= 30).map((item) => ({
+      name: item.child.full_name,
+      age: childAgeLabel(item.child.date_of_birth),
+      score: item.score,
+      reason: item.reasons.join(", ") || "Preventive care follow-up required",
+      municipality: item.child.municipality || "Not set",
+      lastVisit: item.level,
+    }))
+    : highRiskChildren;
+
+  const highRiskCount = visibleHighRiskChildren.filter((item) => item.score >= 60).length;
+  const mediumRiskCount = visibleHighRiskChildren.filter((item) => item.score >= 30 && item.score < 60).length;
+  const aiRiskDistribution = [
+    { label: "Low Risk", value: Math.max(0, riskAlerts.length - highRiskCount - mediumRiskCount), color: "#10B981" },
+    { label: "Medium Risk", value: mediumRiskCount, color: "#F59E0B" },
+    { label: "High Risk", value: highRiskCount, color: "#EF4444" },
+  ];
+  const aiAlerts = riskAlerts.length > 0
+    ? riskAlerts.slice(0, 4).map((item) => ({
+      severity: item.level === "high" ? "critical" : item.level,
+      text: `${item.child.full_name}: ${(item.reasons || []).join(", ") || "Preventive care follow-up required"}`,
+      time: `Score ${item.score}`,
+    }))
+    : [];
+
+
+  const recalculateRisk = async () => {
+    await apiRequest("/risk/recalculate", { method: "POST" });
+    const data = await apiRequest<{ alerts: any[] }>("/risk/alerts");
+    setRiskAlerts(data.alerts);
+    setRiskMessage("Risk scores recalculated.");
   };
 
   return (
@@ -1224,10 +2058,10 @@ function AIRiskDashboard() {
 
       {/* Risk overview */}
       <div className="grid grid-cols-4 gap-4 mb-6">
-        <KPICard label="High-Risk Children" value="2,212" icon={AlertTriangle} color="red" delta="↑ 47 this week" />
-        <KPICard label="Medium Risk" value="7,200" icon={AlertCircle} color="amber" delta="Monitoring" />
-        <KPICard label="Interventions Today" value="89" icon={Zap} color="indigo" delta="34 completed" />
-        <KPICard label="Risk Reduced (30d)" value="412" icon={TrendingUp} color="emerald" delta="↓ from high risk" />
+        <KPICard label="High-Risk Children" value={String(highRiskCount)} icon={AlertTriangle} color="red" delta="Live database" />
+        <KPICard label="Medium Risk" value={String(mediumRiskCount)} icon={AlertCircle} color="amber" delta="Monitoring" />
+        <KPICard label="Open Risk Alerts" value={String(riskAlerts.length)} icon={Zap} color="indigo" delta="Current records" />
+        <KPICard label="Reviewed Children" value={String(visibleHighRiskChildren.length)} icon={TrendingUp} color="emerald" delta="From SAFE records" />
       </div>
 
       <div className="grid lg:grid-cols-3 gap-5 mb-5">
@@ -1236,8 +2070,8 @@ function AIRiskDashboard() {
           <h3 className="text-sm font-bold text-slate-800 mb-4">Risk Distribution</h3>
           <ResponsiveContainer width="100%" height={160}>
             <PieChart>
-              <Pie data={riskDistribution} cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value" paddingAngle={2}>
-                {riskDistribution.map((entry, index) => (
+              <Pie data={aiRiskDistribution} cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value" paddingAngle={2}>
+                {aiRiskDistribution.map((entry, index) => (
                   <Cell key={index} fill={entry.color} />
                 ))}
               </Pie>
@@ -1245,7 +2079,7 @@ function AIRiskDashboard() {
             </PieChart>
           </ResponsiveContainer>
           <div className="space-y-1.5 mt-2">
-            {riskDistribution.map((d) => (
+            {aiRiskDistribution.map((d) => (
               <div key={d.label} className="flex items-center justify-between text-xs">
                 <div className="flex items-center gap-2">
                   <div className="w-2.5 h-2.5 rounded-full" style={{ background: d.color }} />
@@ -1261,12 +2095,7 @@ function AIRiskDashboard() {
         <Card className="p-5 lg:col-span-2">
           <h3 className="text-sm font-bold text-slate-800 mb-4">AI-Generated Alerts · Priority Queue</h3>
           <div className="space-y-2.5">
-            {[
-              { severity: "critical", text: "Mitrovica North: 312 children overdue for MMR — 23% above national average. Immediate nurse deployment recommended.", time: "2h ago" },
-              { severity: "high", text: "Peja Region: Cluster of 18 underweight infants detected in Zones 4-6. Nutrition intervention required.", time: "4h ago" },
-              { severity: "medium", text: "Gjilan: 47 families have not responded to appointment reminders. Escalate to community health workers.", time: "6h ago" },
-              { severity: "low", text: "Pristina Zone 3: Vaccination coverage dipped to 91% — 1.4% below monthly target. No action required yet.", time: "9h ago" },
-            ].map((a, i) => {
+            {(aiAlerts.length > 0 ? aiAlerts : [{ severity: "low", text: "No active risk alerts from the current database.", time: "Live" }]).map((a, i) => {
               const sevStyle: Record<string, string> = {
                 critical: "border-red-200 bg-red-50",
                 high: "border-orange-200 bg-orange-50",
@@ -1302,7 +2131,7 @@ function AIRiskDashboard() {
           </button>
         </div>
         <div className="divide-y divide-slate-50">
-          {highRiskChildren.map((c, i) => (
+          {visibleHighRiskChildren.map((c, i) => (
             <div key={i} className="flex items-center gap-4 px-4 py-3.5 hover:bg-slate-50">
               <div className="w-8 h-8 rounded-full bg-red-100 flex items-center justify-center text-xs font-bold text-red-600 flex-shrink-0">
                 {c.name.split(" ").map((n) => n[0]).join("")}
@@ -1354,20 +2183,101 @@ function AIRiskDashboard() {
 // ─── Admin Dashboard ──────────────────────────────────────────────────────────
 
 function AdminDashboard() {
-  const nurseData = [
-    { name: "Mirela Berisha", zone: "Pristina 3", visits: 142, completion: 96, families: 148 },
-    { name: "Besarta Kelmendi", zone: "Pristina 1", visits: 138, completion: 94, families: 151 },
-    { name: "Lirie Osmani", zone: "Prizren South", visits: 131, completion: 91, families: 142 },
-    { name: "Fatmire Hoxha", zone: "Gjilan Central", visits: 127, completion: 89, families: 145 },
-    { name: "Vjosa Aliu", zone: "Mitrovica North", visits: 98, completion: 74, families: 139 },
-  ];
+  const [stats, setStats] = useState<any | null>(null);
+  const [visits, setVisits] = useState<any[]>([]);
+  const [adminRiskAlerts, setAdminRiskAlerts] = useState<any[]>([]);
+  const [adminUsers, setAdminUsers] = useState<any[]>([]);
+  const [adminChildren, setAdminChildren] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [assignmentNotice, setAssignmentNotice] = useState("");
+  const [assignmentDraft, setAssignmentDraft] = useState({
+    parentId: "",
+    providerId: "",
+    childId: "",
+    notes: "",
+  });
+  const nurseData: any[] = [];
+
+  useEffect(() => {
+    apiRequest<{ stats: any }>("/dashboard/provider/stats").then((data) => setStats(data.stats)).catch(() => setStats(null));
+    apiRequest<{ visits: any[] }>("/visits").then((data) => setVisits(data.visits)).catch(() => setVisits([]));
+    apiRequest<{ alerts: any[] }>("/risk/alerts").then((data) => setAdminRiskAlerts(data.alerts)).catch(() => setAdminRiskAlerts([]));
+    refreshAdminDirectory();
+  }, []);
+
+  const refreshAdminDirectory = async () => {
+    const [usersData, childrenData, assignmentsData] = await Promise.all([
+      apiRequest<{ users: any[] }>("/users/care-team"),
+      apiRequest<{ children: any[] }>("/children"),
+      apiRequest<{ assignments: any[] }>("/users/assignments"),
+    ]);
+    setAdminUsers(usersData.users);
+    setAdminChildren(childrenData.children);
+    setAssignments(assignmentsData.assignments);
+    setAssignmentDraft((draft) => ({
+      ...draft,
+      parentId: draft.parentId || usersData.users.find((item) => item.role === "parent")?.id || "",
+      providerId: draft.providerId || usersData.users.find((item) => item.role === "doctor")?.id || "",
+    }));
+  };
+
+  const liveNurseData = visits.length > 0
+    ? Object.values(visits.reduce((acc: Record<string, any>, visit) => {
+      const key = visit.nurse_name || "Unassigned provider";
+      acc[key] ||= { name: key, zone: visit.location || "Care team", visits: 0, completed: 0, families: new Set() };
+      acc[key].visits += 1;
+      if (visit.status === "completed") acc[key].completed += 1;
+      if (visit.child_name) acc[key].families.add(visit.child_name);
+      return acc;
+    }, {})).map((item: any) => ({
+      name: item.name,
+      zone: item.zone,
+      visits: item.visits,
+      completion: Math.round((item.completed / Math.max(item.visits, 1)) * 100),
+      families: item.families.size,
+    }))
+    : nurseData;
+  const parents = adminUsers.filter((item) => item.role === "parent");
+  const providers = adminUsers.filter((item) => item.role === "doctor");
+  const childrenForSelectedParent = adminChildren.filter((child) => child.parent_id === assignmentDraft.parentId);
+  const createAssignment = async (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    setAssignmentNotice("");
+    try {
+      await apiRequest("/users/assignments", {
+        method: "POST",
+        body: {
+          parentId: assignmentDraft.parentId,
+          providerId: assignmentDraft.providerId,
+          childId: assignmentDraft.childId || undefined,
+          relationship: "assigned_nurse",
+          notes: assignmentDraft.notes || undefined,
+        },
+      });
+      setAssignmentNotice("Nurse assigned successfully.");
+      await refreshAdminDirectory();
+    } catch (error) {
+      setAssignmentNotice(error instanceof Error ? error.message : "Could not assign nurse");
+    }
+  };
+
+  const endAssignment = async (assignmentId: string) => {
+    setAssignmentNotice("");
+    try {
+      await apiRequest(`/users/assignments/${assignmentId}/end`, { method: "PATCH" });
+      setAssignmentNotice("Assignment ended.");
+      await refreshAdminDirectory();
+    } catch (error) {
+      setAssignmentNotice(error instanceof Error ? error.message : "Could not end assignment");
+    }
+  };
 
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-xl font-bold text-slate-900">Municipal Dashboard — Pristina Region</h1>
-          <p className="text-sm text-slate-500">Real-time public health intelligence · May 2025</p>
+          <h1 className="text-xl font-bold text-slate-900">Municipal Dashboard</h1>
+          <p className="text-sm text-slate-500">Real-time public health intelligence from SAFE database</p>
         </div>
         <div className="flex gap-2">
           <button className="flex items-center gap-1.5 px-4 py-2 border border-slate-200 rounded-lg text-xs font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
@@ -1381,11 +2291,131 @@ function AdminDashboard() {
 
       {/* KPI row */}
       <div className="grid grid-cols-5 gap-4 mb-6">
-        <KPICard label="Active Children" value="47,832" icon={Baby} color="indigo" delta="↑ 412 this month" />
-        <KPICard label="Vaccination Rate" value="91.4%" icon={Syringe} color="emerald" delta="↑ 1.2% vs last month" />
-        <KPICard label="Overdue Interventions" value="1,847" icon={Clock} color="amber" delta="↓ 23 resolved today" />
-        <KPICard label="Active Nurses" value="612" icon={Stethoscope} color="blue" delta="94% visit rate" />
-        <KPICard label="High-Risk Alerts" value="2,212" icon={AlertTriangle} color="red" delta="89 actioned today" />
+        <KPICard label="Active Children" value={String(stats?.children_count ?? 0)} icon={Baby} color="indigo" delta={`${stats?.parents_count ?? 0} parents`} />
+        <KPICard label="Vaccination Gaps" value={String(stats?.vaccination_gaps ?? 0)} icon={Syringe} color="emerald" delta={`${stats?.overdue_vaccinations ?? 0} overdue`} />
+        <KPICard label="Overdue Check-ups" value={String(stats?.overdue_checkups ?? 0)} icon={Clock} color="amber" delta={`${stats?.checkup_gaps ?? 0} gaps`} />
+        <KPICard label="Home Visits" value={String(stats?.home_visits_count ?? 0)} icon={Stethoscope} color="blue" delta={`${stats?.completed_home_visits ?? 0} completed`} />
+        <KPICard label="Risk Alerts" value={String(adminRiskAlerts.filter((alert) => alert.score >= 60).length)} icon={AlertTriangle} color="red" delta="Live" />
+      </div>
+
+      <div className="grid lg:grid-cols-5 gap-5 mb-5">
+        <Card className="p-5 lg:col-span-2">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-sm font-bold text-slate-800">Assign Nurse</h3>
+            <Badge variant="info">{assignments.length} active</Badge>
+          </div>
+          <form onSubmit={createAssignment} className="space-y-3">
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Parent</label>
+              <select
+                value={assignmentDraft.parentId}
+                onChange={(event) => setAssignmentDraft((draft) => ({ ...draft, parentId: event.target.value, childId: "" }))}
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-indigo-300"
+              >
+                <option value="">Select parent</option>
+                {parents.map((parent) => (
+                  <option key={parent.id} value={parent.id}>{parent.name} - {parent.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Child</label>
+              <select
+                value={assignmentDraft.childId}
+                onChange={(event) => setAssignmentDraft((draft) => ({ ...draft, childId: event.target.value }))}
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-indigo-300"
+              >
+                <option value="">Whole family</option>
+                {childrenForSelectedParent.map((child) => (
+                  <option key={child.id} value={child.id}>{child.full_name}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Nurse / Provider</label>
+              <select
+                value={assignmentDraft.providerId}
+                onChange={(event) => setAssignmentDraft((draft) => ({ ...draft, providerId: event.target.value }))}
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white focus:outline-none focus:border-indigo-300"
+              >
+                <option value="">Select provider</option>
+                {providers.map((provider) => (
+                  <option key={provider.id} value={provider.id}>{provider.name} - {provider.email}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-500 mb-1 block">Notes</label>
+              <input
+                value={assignmentDraft.notes}
+                onChange={(event) => setAssignmentDraft((draft) => ({ ...draft, notes: event.target.value }))}
+                placeholder="Zone, clinic, reason..."
+                className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-300"
+              />
+            </div>
+            <button
+              type="submit"
+              disabled={!assignmentDraft.parentId || !assignmentDraft.providerId}
+              className="w-full bg-indigo-600 text-white py-2.5 rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              Assign Nurse
+            </button>
+            {assignmentNotice && (
+              <p className={`text-xs font-semibold ${assignmentNotice.includes("Could") || assignmentNotice.includes("not") ? "text-red-600" : "text-emerald-600"}`}>
+                {assignmentNotice}
+              </p>
+            )}
+          </form>
+        </Card>
+
+        <Card className="lg:col-span-3">
+          <div className="p-4 border-b border-slate-100 flex items-center justify-between">
+            <h3 className="text-sm font-bold text-slate-800">Active Parent-Nurse Assignments</h3>
+            <button onClick={refreshAdminDirectory} className="text-xs text-indigo-600 font-semibold hover:underline">Refresh</button>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full">
+              <thead>
+                <tr className="border-b border-slate-50">
+                  <th className="text-left px-4 py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Parent</th>
+                  <th className="text-left px-4 py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Child</th>
+                  <th className="text-left px-4 py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Nurse</th>
+                  <th className="text-left px-4 py-3 text-[11px] font-bold text-slate-400 uppercase tracking-wider">Assigned</th>
+                  <th className="px-4 py-3" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {assignments.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="px-4 py-6 text-center text-sm text-slate-500">No active assignments yet.</td>
+                  </tr>
+                )}
+                {assignments.map((assignment) => (
+                  <tr key={assignment.id} className="hover:bg-slate-50">
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-semibold text-slate-800">{assignment.parent_name}</p>
+                      <p className="text-xs text-slate-400">{assignment.parent_email}</p>
+                    </td>
+                    <td className="px-4 py-3 text-sm text-slate-600">{assignment.child_name || "Whole family"}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-sm font-semibold text-slate-800">{assignment.provider_name}</p>
+                      <p className="text-xs text-slate-400">{assignment.provider_email}</p>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-500">{formatDisplayDate(assignment.assigned_at)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <button
+                        onClick={() => endAssignment(assignment.id)}
+                        className="text-xs text-red-600 font-semibold hover:underline"
+                      >
+                        End
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
       </div>
 
       <div className="grid lg:grid-cols-5 gap-5 mb-5">
@@ -1435,7 +2465,7 @@ function AdminDashboard() {
       <Card>
         <div className="p-4 border-b border-slate-100 flex items-center justify-between">
           <h3 className="text-sm font-bold text-slate-800">Nurse Performance — This Month</h3>
-          <button className="text-xs text-indigo-600 font-semibold hover:underline">View all 612 nurses</button>
+          <button className="text-xs text-indigo-600 font-semibold hover:underline">View all providers</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -1450,7 +2480,7 @@ function AdminDashboard() {
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-50">
-              {nurseData.map((n, i) => (
+              {liveNurseData.map((n, i) => (
                 <tr key={i} className="hover:bg-slate-50 transition-colors">
                   <td className="px-4 py-3.5">
                     <div className="flex items-center gap-2.5">
@@ -1489,26 +2519,62 @@ function AdminDashboard() {
 
 // ─── Messaging Module ─────────────────────────────────────────────────────────
 
-function MessagingModule() {
+function MessagingModule({ user }: { user: SafeUser | null }) {
   const [activeConv, setActiveConv] = useState(0);
   const [message, setMessage] = useState("");
+  const [apiMessages, setApiMessages] = useState<any[]>([]);
+  const [careTeam, setCareTeam] = useState<any[]>([]);
 
   const conversations = [
-    { name: "Mirela Berisha (Nurse)", avatar: "MB", lastMessage: "Ardit's next visit is confirmed for June 5", time: "2m ago", unread: 2, type: "nurse" },
-    { name: "Pristina Health Center", avatar: "PH", lastMessage: "Your vaccination reminder: MMR due June 12", time: "1h ago", unread: 0, type: "system" },
-    { name: "Dr. Adnan Hoxha", avatar: "AH", lastMessage: "Please bring Ardit's health record booklet", time: "Yesterday", unread: 0, type: "doctor" },
-    { name: "SAFE Platform", avatar: "SP", lastMessage: "New AI insight available for Ardit", time: "2d ago", unread: 1, type: "system" },
+    { name: "SAFE Care Team", avatar: "SC", lastMessage: "No messages yet.", time: "Live", unread: 0, type: "system" },
   ];
 
   const messages = [
-    { sender: "nurse", text: "Good morning! I wanted to confirm Ardit's 18-month check-up for June 5 at 10:00 AM. Will this time work for the family?", time: "09:14" },
-    { sender: "parent", text: "Yes, that works perfectly. We will be home all morning.", time: "09:22" },
-    { sender: "nurse", text: "Excellent. Please make sure Ardit has not eaten for at least 2 hours before the blood draw. Also, bring his yellow vaccination booklet.", time: "09:24" },
-    { sender: "parent", text: "Understood, thank you Mirela. One question — he has had a mild cough for 2 days. Should we still go ahead?", time: "09:31" },
-    { sender: "nurse", text: "A mild cough is fine as long as he does not have a fever above 38°C. If he develops fever today, please message me and we can reschedule.", time: "09:35" },
-    { sender: "system", text: "⚑ Appointment confirmed for June 5, 10:00 AM · Pristina Zone 3 Home Visit", time: "09:36" },
-    { sender: "parent", text: "Perfect. Thank you so much!", time: "09:38" },
+    { sender: "system", text: "Start a secure conversation with your care team.", time: "Live" },
   ];
+
+  useEffect(() => {
+    apiRequest<{ messages: any[] }>("/messages")
+      .then((data) => setApiMessages(data.messages))
+      .catch(() => setApiMessages([]));
+    apiRequest<{ users: any[] }>("/users/care-team")
+      .then((data) => setCareTeam(data.users))
+      .catch(() => setCareTeam([]));
+  }, []);
+
+  const visibleMessages = apiMessages.length > 0
+    ? apiMessages.map((item) => ({
+      sender: item.sender_id === user?.id ? "parent" : "nurse",
+      text: item.body,
+      time: new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+    }))
+    : messages;
+  const visibleConversations = apiMessages.length > 0
+    ? Array.from(new Map(apiMessages.map((item) => {
+      const other = item.sender_id === user?.id ? item.recipient : item.sender;
+      const name = other?.name || "SAFE Care Team";
+      return [name, {
+        name,
+        avatar: initialsFor(name),
+        lastMessage: item.body,
+        time: new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        unread: 0,
+        type: other?.role || "system",
+      }];
+    })).values())
+    : conversations;
+
+  const sendBackendMessage = async () => {
+    const recipient = careTeam.find((item) => item.id !== user?.id);
+    if (!recipient || !message.trim()) return;
+    await apiRequest("/messages", {
+      method: "POST",
+      body: { recipientId: recipient.id, body: message },
+    });
+    setMessage("");
+    const data = await apiRequest<{ messages: any[] }>("/messages");
+    setApiMessages(data.messages);
+  };
 
   return (
     <div className="h-full flex overflow-hidden" style={{ maxHeight: "calc(100vh - 56px)" }}>
@@ -1521,7 +2587,7 @@ function MessagingModule() {
           </div>
         </div>
         <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
-          {conversations.map((c, i) => (
+          {visibleConversations.map((c, i) => (
             <button
               key={i}
               onClick={() => setActiveConv(i)}
@@ -1552,10 +2618,10 @@ function MessagingModule() {
         {/* Chat header */}
         <div className="bg-white border-b border-slate-100 px-5 py-3.5 flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-bold text-indigo-700">
-            {conversations[activeConv].avatar}
+            {visibleConversations[Math.min(activeConv, visibleConversations.length - 1)].avatar}
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-900">{conversations[activeConv].name}</p>
+            <p className="text-sm font-semibold text-slate-900">{visibleConversations[Math.min(activeConv, visibleConversations.length - 1)].name}</p>
             <p className="text-xs text-emerald-600 font-medium">● Online</p>
           </div>
           <div className="ml-auto flex items-center gap-2">
@@ -1565,7 +2631,7 @@ function MessagingModule() {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          {messages.map((m, i) => {
+          {visibleMessages.map((m, i) => {
             if (m.sender === "system") {
               return (
                 <div key={i} className="text-center">
@@ -1599,7 +2665,10 @@ function MessagingModule() {
             <button className="w-10 h-10 rounded-xl bg-slate-100 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-center transition-colors">
               <Mic className="w-4 h-4" />
             </button>
-            <button className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition-colors shadow-sm shadow-indigo-200">
+            <button
+              onClick={sendBackendMessage}
+              className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition-colors shadow-sm shadow-indigo-200"
+            >
               <Send className="w-4 h-4" />
             </button>
           </div>
@@ -1611,12 +2680,97 @@ function MessagingModule() {
 
 // ─── Settings Page ────────────────────────────────────────────────────────────
 
-function SettingsPage() {
+function SettingsPage({ user, onUserUpdate }: { user: SafeUser | null; onUserUpdate: (user: SafeUser) => void }) {
   const [language, setLanguage] = useState("sq");
   const [notifications, setNotifications] = useState({ sms: true, push: true, email: false, reminders: true });
+  const [settingsSaved, setSettingsSaved] = useState("");
+  const [profile, setProfile] = useState({
+    name: user?.name || "",
+    email: user?.email || "",
+    phone: user?.phone || "",
+    municipality: user?.municipality || "",
+    address: user?.address || "",
+    password: "",
+  });
+  const [profileMessage, setProfileMessage] = useState("");
+  const [settingsChildren, setSettingsChildren] = useState<any[]>([]);
+
+  useEffect(() => {
+    apiRequest<{ user: SafeUser }>("/users/me")
+      .then((data) => {
+        onUserUpdate(data.user);
+        setProfile({
+          name: data.user.name || "",
+          email: data.user.email || "",
+          phone: data.user.phone || "",
+          municipality: data.user.municipality || "",
+          address: data.user.address || "",
+          password: "",
+        });
+      })
+      .catch(() => undefined);
+    apiRequest<{ settings: any }>("/settings")
+      .then((data) => {
+        setLanguage(data.settings.language || "sq");
+        setNotifications({
+          sms: data.settings.sms_notifications,
+          push: data.settings.push_notifications,
+          email: data.settings.email_notifications,
+          reminders: data.settings.reminder_notifications,
+        });
+      })
+      .catch(() => undefined);
+    apiRequest<{ children: any[] }>("/children")
+      .then((data) => setSettingsChildren(data.children))
+      .catch(() => setSettingsChildren([]));
+  }, []);
+
+  const saveProfile = async (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    setProfileMessage("");
+    try {
+      const data = await apiRequest<{ user: SafeUser }>("/users/me", {
+        method: "PATCH",
+        body: {
+          name: profile.name,
+          email: profile.email,
+          phone: profile.phone,
+          municipality: profile.municipality,
+          address: profile.address,
+          password: profile.password || undefined,
+        },
+      });
+      const token = getStoredToken();
+      if (token) storeSession(token, data.user);
+      onUserUpdate(data.user);
+      setProfile((value) => ({ ...value, password: "" }));
+      setProfileMessage("Profile saved");
+    } catch (error) {
+      setProfileMessage(error instanceof Error ? error.message : "Could not save profile");
+    }
+  };
 
   const toggle = (key: keyof typeof notifications) => {
-    setNotifications((prev) => ({ ...prev, [key]: !prev[key] }));
+    setNotifications((prev) => {
+      const next = { ...prev, [key]: !prev[key] };
+      apiRequest("/settings", {
+        method: "PATCH",
+        body: {
+          smsNotifications: next.sms,
+          pushNotifications: next.push,
+          emailNotifications: next.email,
+          reminderNotifications: next.reminders,
+        },
+      }).then(() => setSettingsSaved("Settings saved")).catch(() => setSettingsSaved("Could not save settings"));
+      return next;
+    });
+  };
+
+  const saveLanguage = (code: string) => {
+    setLanguage(code);
+    apiRequest("/settings", { method: "PATCH", body: { language: code } })
+      .then(() => setSettingsSaved("Settings saved"))
+      .catch(() => setSettingsSaved("Could not save settings"));
   };
 
   const languages = [
@@ -1631,20 +2785,20 @@ function SettingsPage() {
       <Card className="p-5">
         <h3 className="text-sm font-bold text-slate-800 mb-4 pb-3 border-b border-slate-100">Family Information</h3>
         <div className="flex items-center gap-4 mb-5">
-          <div className="w-16 h-16 rounded-2xl bg-indigo-100 flex items-center justify-center text-xl font-black text-indigo-600">FK</div>
+          <div className="w-16 h-16 rounded-2xl bg-indigo-100 flex items-center justify-center text-xl font-black text-indigo-600">{(profile.name || "SAFE").split(" ").map((part) => part[0]).join("").slice(0, 2).toUpperCase()}</div>
           <div>
-            <p className="font-bold text-slate-900">Fatmir Krasniqi</p>
-            <p className="text-sm text-slate-500">Parent / Guardian · Pristina</p>
+            <p className="font-bold text-slate-900">{profile.name || "Profile"}</p>
+            <p className="text-sm text-slate-500">{profile.role === "parent" ? "Parent / Guardian" : profile.role === "doctor" ? "Doctor / Provider" : "Admin"}{profile.municipality ? ` - ${profile.municipality}` : ""}</p>
             <Badge variant="success" ><Check className="w-2.5 h-2.5" /> Verified</Badge>
           </div>
-          <button className="ml-auto px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">Edit Profile</button>
+          <button onClick={saveProfile} className="ml-auto px-4 py-2 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">Save Profile</button>
         </div>
         <div className="grid grid-cols-2 gap-4">
           {[
-            { label: "Full Name", value: "Fatmir Krasniqi" },
-            { label: "Phone", value: "+383 44 512 788" },
-            { label: "Municipality", value: "Pristina" },
-            { label: "Address", value: "Rruga Dardania 14" },
+            { label: "Full Name", value: profile.name },
+            { label: "Phone", value: profile.phone },
+            { label: "Municipality", value: profile.municipality },
+            { label: "Address", value: profile.address },
           ].map((f) => (
             <div key={f.label}>
               <label className="text-xs text-slate-400 font-semibold">{f.label}</label>
@@ -1652,6 +2806,28 @@ function SettingsPage() {
             </div>
           ))}
         </div>
+        <div className="grid grid-cols-2 gap-3 mt-5 pt-4 border-t border-slate-100">
+          {[
+            { key: "name", label: "Full Name", type: "text" },
+            { key: "email", label: "Email", type: "email" },
+            { key: "phone", label: "Phone", type: "text" },
+            { key: "municipality", label: "Municipality", type: "text" },
+            { key: "address", label: "Address", type: "text" },
+            { key: "password", label: "New Password", type: "password" },
+          ].map((field) => (
+            <div key={field.key}>
+              <label className="text-xs text-slate-400 font-semibold">{field.label}</label>
+              <input
+                type={field.type}
+                value={profile[field.key as keyof typeof profile]}
+                onChange={(event) => setProfile((value) => ({ ...value, [field.key]: event.target.value }))}
+                placeholder={field.key === "password" ? "Leave blank to keep current password" : field.label}
+                className="w-full mt-1 px-3 py-2 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
+              />
+            </div>
+          ))}
+        </div>
+        {profileMessage && <p className={`text-xs font-semibold mt-3 ${profileMessage.includes("Could") || profileMessage.includes("exists") ? "text-red-600" : "text-emerald-600"}`}>{profileMessage}</p>}
       </Card>
 
       {/* Child profiles */}
@@ -1663,17 +2839,17 @@ function SettingsPage() {
           </button>
         </div>
         <div className="space-y-3">
-          {[
-            { initials: "AK", name: "Ardit Krasniqi", detail: "18 months · Male · Health Score 82", status: "active" },
-            { initials: "MK", name: "Mimoza Krasniqi", detail: "4 years · Female · Health Score 94", status: "active" },
-          ].map((c) => (
-            <div key={c.name} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
-              <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-black text-indigo-600 flex-shrink-0">{c.initials}</div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-slate-800">{c.name}</p>
-                <p className="text-xs text-slate-500">{c.detail}</p>
+          {settingsChildren.length === 0 && <p className="text-sm text-slate-500">No child profiles yet.</p>}
+          {settingsChildren.map((c) => (
+            <div key={c.id} className="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+              <div className="w-10 h-10 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-black text-indigo-600 flex-shrink-0">
+                {c.full_name.split(" ").map((part: string) => part[0]).join("").slice(0, 2).toUpperCase()}
               </div>
-              <Badge variant="success">{c.status}</Badge>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-slate-800">{c.full_name}</p>
+                <p className="text-xs text-slate-500">{new Date(c.date_of_birth).toLocaleDateString()} · {c.gender}</p>
+              </div>
+              <Badge variant="success">active</Badge>
               <button className="text-xs text-indigo-600 font-semibold hover:underline">Manage</button>
             </div>
           ))}
@@ -1687,7 +2863,7 @@ function SettingsPage() {
           {languages.map((l) => (
             <button
               key={l.code}
-              onClick={() => setLanguage(l.code)}
+              onClick={() => saveLanguage(l.code)}
               className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl border transition-all ${language === l.code ? "border-indigo-300 bg-indigo-50" : "border-slate-100 hover:border-slate-200"}`}
             >
               <span className="text-lg">{l.flag}</span>
@@ -1701,6 +2877,7 @@ function SettingsPage() {
       {/* Notifications */}
       <Card className="p-5">
         <h3 className="text-sm font-bold text-slate-800 mb-4 pb-3 border-b border-slate-100">Notification Preferences</h3>
+        {settingsSaved && <p className="text-xs text-emerald-600 font-semibold mb-3">{settingsSaved}</p>}
         <div className="space-y-3">
           {[
             { key: "sms" as const, label: "SMS Reminders", desc: "Vaccination and appointment reminders via SMS" },
@@ -1754,23 +2931,36 @@ function SettingsPage() {
 export default function App() {
   const [activePage, setActivePage] = useState<Page>("landing");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [user, setUser] = useState<SafeUser | null>(() => (getStoredToken() ? getStoredUser() : null));
+
+  const handleLogout = () => {
+    clearSession();
+    setUser(null);
+    setActivePage("login");
+  };
+
+  useEffect(() => {
+    if (!allowedPagesFor(user).includes(activePage)) {
+      setActivePage(defaultPageFor(user));
+    }
+  }, [activePage, user]);
 
   return (
     <div className="flex h-screen bg-background overflow-hidden" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
-      <Sidebar activePage={activePage} setActivePage={setActivePage} open={sidebarOpen} />
+      <Sidebar activePage={activePage} setActivePage={setActivePage} open={sidebarOpen} user={user} onLogout={handleLogout} />
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <TopBar activePage={activePage} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
+        <TopBar activePage={activePage} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} user={user} />
         <main className="flex-1 overflow-auto">
-          {activePage === "landing" && <LandingPage setActivePage={setActivePage} />}
-          {activePage === "login" && <LoginPage setActivePage={setActivePage} />}
-          {activePage === "parent" && <ParentDashboard />}
-          {activePage === "nurse" && <NurseDashboard />}
+          {activePage === "landing" && <LandingPage setActivePage={setActivePage} user={user} />}
+          {activePage === "login" && <AuthPage setActivePage={setActivePage} onLogin={setUser} />}
+          {activePage === "parent" && <ParentDashboard user={user} onLogout={handleLogout} />}
+          {activePage === "nurse" && <NurseDashboard user={user} />}
           {activePage === "visit" && <HomeVisitForm />}
-          {activePage === "timeline" && <ChildTimeline />}
+          {activePage === "timeline" && <LiveChildTimeline />}
           {activePage === "ai-risk" && <AIRiskDashboard />}
           {activePage === "admin" && <AdminDashboard />}
-          {activePage === "messaging" && <MessagingModule />}
-          {activePage === "settings" && <SettingsPage />}
+          {activePage === "messaging" && <MessagingModule user={user} />}
+          {activePage === "settings" && <SettingsPage user={user} onUserUpdate={setUser} />}
         </main>
       </div>
     </div>
