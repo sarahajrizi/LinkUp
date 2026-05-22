@@ -9,7 +9,8 @@ import {
   ChevronRight, ChevronDown, Zap, Users, MoreHorizontal,
   Building2, Syringe, Info, Check, RefreshCw, MapPin,
   Star, FileText, Mail, QrCode, ShieldCheck, Fingerprint,
-  CalendarDays, Thermometer, AlertOctagon, ScanLine
+  CalendarDays, Thermometer, AlertOctagon, ScanLine,
+  Target, BadgeAlert, UserCheck, HeartPulse
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -20,7 +21,7 @@ import { apiRequest, clearSession, getStoredToken, getStoredUser, login, registe
 type Page =
   | "landing" | "login" | "parent" | "nurse"
   | "visit" | "timeline" | "ai-risk" | "admin"
-  | "messaging" | "settings" | "passport";
+  | "messaging" | "settings" | "passport" | "municipality" | "ai-report";
 
 interface NavItem {
   id: Page;
@@ -38,6 +39,8 @@ const navItems: NavItem[] = [
   { id: "visit", label: "Home Visit Form", icon: ClipboardList, group: "Portals" },
   { id: "timeline", label: "Child Timeline", icon: Activity, group: "Clinical" },
   { id: "ai-risk", label: "AI Risk Detection", icon: AlertTriangle, group: "Clinical" },
+  { id: "municipality", label: "Municipality Monitor", icon: Building2, group: "Management" },
+  { id: "ai-report", label: "AI Weekly Report", icon: Zap, group: "Management" },
   { id: "admin", label: "Admin Dashboard", icon: BarChart3, group: "Management" },
   { id: "messaging", label: "Messaging", icon: MessageSquare, group: "Management" },
   { id: "settings", label: "Settings", icon: Settings, group: "Management" },
@@ -46,7 +49,8 @@ const navItems: NavItem[] = [
 const pagesByRole: Record<SafeUser["role"], Page[]> = {
   parent: ["parent", "passport", "timeline", "messaging", "settings"],
   doctor: ["nurse", "passport", "visit", "timeline", "ai-risk", "messaging", "settings"],
-  admin: ["admin", "ai-risk", "nurse", "messaging", "settings"],
+  municipality: ["municipality", "ai-report", "ai-risk", "settings"],
+  admin: ["admin", "municipality", "ai-report", "ai-risk", "nurse", "messaging", "settings"],
 };
 
 function allowedPagesFor(user: SafeUser | null): Page[] {
@@ -58,6 +62,7 @@ function defaultPageFor(user: SafeUser | null): Page {
   if (!user) return "landing";
   if (user.role === "parent") return "parent";
   if (user.role === "doctor") return "nurse";
+  if (user.role === "municipality") return "municipality";
   return "admin";
 }
 
@@ -254,6 +259,7 @@ function Sidebar({
             </div>
           );
         })}
+
       </nav>
 
       {/* User profile */}
@@ -795,7 +801,8 @@ function AuthPage({
   onLogin: (user: SafeUser) => void;
 }) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [role, setRole] = useState<"parent" | "doctor" | "admin">("parent");
+  const [role, setRole] = useState<"parent" | "doctor" | "admin" | "municipality">("parent");
+  const [municipality, setMunicipality] = useState("");
   const [name, setName] = useState("Demo Parent");
   const [email, setEmail] = useState("parent@safe.test");
   const [password, setPassword] = useState("Password123!");
@@ -805,14 +812,16 @@ function AuthPage({
   const [error, setError] = useState("");
 
   const roleOptions = [
-    { id: "parent", label: "Parent", icon: Heart, demoEmail: "parent@safe.test" },
-    { id: "doctor", label: "Doctor", icon: Stethoscope, demoEmail: "doctor@safe.test" },
-    { id: "admin", label: "Admin", icon: Building2, demoEmail: "admin@safe.test" },
+    { id: "parent", label: "Parent", icon: Heart, demoEmail: "parent@safe.test", loginOnly: false },
+    { id: "doctor", label: "Doctor / Nurse", icon: Stethoscope, demoEmail: "doctor@safe.test", loginOnly: false },
+    { id: "municipality", label: "Municipality", icon: Building2, demoEmail: "municipality@safe.test", loginOnly: false },
+    { id: "admin", label: "Admin", icon: BarChart3, demoEmail: "admin@safe.test", loginOnly: true },
   ] as const;
 
   const destinationFor = (userRole: SafeUser["role"]): Page => {
     if (userRole === "parent") return "parent";
     if (userRole === "doctor") return "nurse";
+    if (userRole === "municipality") return "municipality";
     return "admin";
   };
 
@@ -838,6 +847,7 @@ function AuthPage({
       setName("");
       setEmail("");
       setPassword("");
+      setMunicipality("");
     }
   };
 
@@ -850,7 +860,7 @@ function AuthPage({
     try {
       const session = mode === "login"
         ? await login(email, password)
-        : await registerAccount(name, email, password, role === "admin" ? "doctor" : role);
+        : await registerAccount(name, email, password, role === "admin" ? "doctor" : role as "parent" | "doctor" | "municipality", role === "municipality" ? municipality : undefined);
 
       onLogin(session.user);
       setMessage(mode === "login" ? "Logged in successfully." : "Account created successfully.");
@@ -883,16 +893,14 @@ function AuthPage({
             </button>
           </div>
 
-          <div className="grid grid-cols-3 gap-2 mb-5">
-            {roleOptions.map((item) => {
+          <div className="grid grid-cols-2 gap-2 mb-5">
+            {roleOptions.filter((item) => mode === "login" || !item.loginOnly).map((item) => {
               const Icon = item.icon;
-              const disabled = mode === "register" && item.id === "admin";
               return (
                 <button
                   key={item.id}
-                  disabled={disabled}
                   onClick={() => selectRole(item.id)}
-                  className={`p-3 rounded-xl border text-center transition-all disabled:opacity-40 ${role === item.id ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200"}`}
+                  className={`p-3 rounded-xl border text-center transition-all ${role === item.id ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200"}`}
                 >
                   <Icon className="w-4 h-4 mx-auto mb-1" />
                   <span className="text-xs font-bold">{item.label}</span>
@@ -903,10 +911,23 @@ function AuthPage({
 
           <form onSubmit={submit} className="space-y-3">
             {mode === "register" && (
-              <div className="relative">
-                <User className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Full name" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" required />
-              </div>
+              <>
+                <div className="relative">
+                  <User className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Full name" className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" required />
+                </div>
+                {role === "municipality" && (
+                  <div className="relative">
+                    <MapPin className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                    <select value={municipality} onChange={(e) => setMunicipality(e.target.value)} required className="w-full pl-9 pr-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 bg-white appearance-none">
+                      <option value="">Select municipality…</option>
+                      {["Pristina","Prizren","Ferizaj","Gjilan","Peja","Gjakova","Mitrovica","Vushtrri","Skenderaj","Drenas","Lipjan","Fushë Kosovë","Obiliq","Podujeva","Kaçanik","Shtime","Suhareka","Rahovec","Malisheva","Klinë","Istog","Deçan","Junik","Dragash","Mamushë","Mamusha","Viti","Kamenicë","Novo Brdo","Ranilug","Partesh","Klokot"].sort().map((m) => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+              </>
             )}
 
             <div className="relative">
@@ -2694,6 +2715,548 @@ function AIRiskDashboard() {
   );
 }
 
+// ─── Municipality Dashboard ───────────────────────────────────────────────────
+
+type MunicipalityOverview = {
+  totalChildren: number;
+  vaccinationCoverage: number;
+  vaccinations: { completed: number; missed: number; pending: number; delayed: number; total: number };
+  checkupCoverage: number;
+  checkups: { completed: number; missed: number; total: number };
+  upcomingAppointments: number;
+  riskDistribution: { level: string; count: number }[];
+  highRiskChildren: { id: string; full_name: string; date_of_birth: string; municipality: string; score: number; level: string; reasons: string[]; assigned_nurse: string }[];
+  healthcareWorkers: { id: string; name: string; email: string; municipality: string; assigned_families: number; visits_completed: number; visits_pending: number }[];
+  vaccinationTrend: { month: string; completed: number; missed: number }[];
+  overdueVaccinations: { child_id: string; full_name: string; municipality: string; vaccine_name: string; recommended_date: string; days_overdue: number; assigned_nurse: string }[];
+  municipality: string;
+};
+
+function MunicipalityDashboard({ user }: { user: SafeUser | null }) {
+  const [data, setData] = useState<MunicipalityOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [activeTab, setActiveTab] = useState<"overview" | "risk" | "workers" | "overdue">("overview");
+  const [lastRefresh, setLastRefresh] = useState(new Date());
+
+  const load = async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const res = await apiRequest<{ overview: MunicipalityOverview }>("/municipality/overview");
+      setData(res.overview);
+      setLastRefresh(new Date());
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Auto-refresh every 60 seconds
+  useEffect(() => {
+    const id = setInterval(load, 60000);
+    return () => clearInterval(id);
+  }, []);
+
+  const riskColor: Record<string, string> = {
+    low: "#10B981", moderate: "#F59E0B", high: "#F97316", critical: "#EF4444",
+  };
+  const riskBadge: Record<string, string> = {
+    low: "text-emerald-700 bg-emerald-50 border-emerald-200",
+    moderate: "text-amber-700 bg-amber-50 border-amber-200",
+    high: "text-orange-700 bg-orange-50 border-orange-200",
+    critical: "text-red-700 bg-red-50 border-red-200",
+  };
+
+  const d = data;
+  const totalRisk = d?.riskDistribution.reduce((s, r) => s + r.count, 0) || 1;
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 py-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <Building2 className="w-7 h-7 text-indigo-600" />
+            Municipality Health Monitor
+          </h1>
+          <p className="text-sm text-slate-500 mt-0.5">
+            {d?.municipality || user?.municipality || "Loading…"} · Real-time preventive care oversight
+          </p>
+        </div>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-1.5 text-xs text-slateald-500">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+            Live · refreshed {lastRefresh.toLocaleTimeString()}
+          </div>
+          <button onClick={load} disabled={loading} className="flex items-center gap-2 text-sm font-semibold bg-indigo-600 text-white px-4 py-2 rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-colors">
+            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            Refresh
+          </button>
+        </div>
+      </div>
+
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">{error}</div>}
+
+      {/* KPI Cards */}
+      {d && (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          {[
+            { label: "Total Children", value: d.totalChildren.toLocaleString(), icon: Baby, color: "indigo", sub: "Registered in municipality" },
+            { label: "Vaccine Coverage", value: `${d.vaccinationCoverage}%`, icon: Syringe, color: d.vaccinationCoverage >= 90 ? "emerald" : d.vaccinationCoverage >= 75 ? "amber" : "red", sub: `${d.vaccinations.missed} missed · ${d.vaccinations.pending} pending` },
+            { label: "Checkup Coverage", value: `${d.checkupCoverage}%`, icon: HeartPulse, color: d.checkupCoverage >= 85 ? "emerald" : "amber", sub: `${d.checkups.missed} missed check-ups` },
+            { label: "Upcoming Appts", value: d.upcomingAppointments.toLocaleString(), icon: CalendarDays, color: "blue", sub: "Scheduled appointments" },
+          ].map(({ label, value, icon: Icon, color, sub }) => (
+            <div key={label} className="bg-white rounded-2xl border border-slate-200 shadow-sm p-5">
+              <div className={`w-10 h-10 rounded-xl bg-${color}-50 flex items-center justify-center mb-3`}>
+                <Icon className={`w-5 h-5 text-${color}-600`} />
+              </div>
+              <p className="text-2xl font-bold text-slate-900">{value}</p>
+              <p className="text-xs font-semibold text-slate-600 mt-0.5">{label}</p>
+              <p className="text-[11px] text-slate-400 mt-1">{sub}</p>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Tabs */}
+      <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
+        {(["overview", "risk", "workers", "overdue"] as const).map((t) => (
+          <button key={t} onClick={() => setActiveTab(t)}
+            className={`flex-1 text-xs font-semibold py-2 rounded-lg transition-all capitalize ${activeTab === t ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+            {t === "risk" ? "High Risk" : t === "workers" ? "Healthcare Workers" : t === "overdue" ? "Overdue Vaccines" : "Overview"}
+          </button>
+        ))}
+      </div>
+
+      {/* Overview Tab */}
+      {activeTab === "overview" && d && (
+        <div className="grid gap-6 lg:grid-cols-2">
+          {/* Vaccination trend chart */}
+          <Card className="p-5">
+            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-indigo-600" />
+              Vaccination Trend (6 months)
+            </h3>
+            {d.vaccinationTrend.length === 0
+              ? <p className="text-sm text-slate-400 text-center py-8">No data yet</p>
+              : <ResponsiveContainer width="100%" height={200}>
+                <BarChart data={d.vaccinationTrend}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                  <XAxis dataKey="month" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip />
+                  <Bar dataKey="completed" name="Completed" fill="#10B981" radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="missed" name="Missed" fill="#EF4444" radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>}
+          </Card>
+
+          {/* Risk distribution */}
+          <Card className="p-5">
+            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <AlertOctagon className="w-4 h-4 text-indigo-600" />
+              Risk Distribution
+            </h3>
+            {d.riskDistribution.length === 0
+              ? <p className="text-sm text-slate-400 text-center py-8">No risk data yet</p>
+              : <>
+                <ResponsiveContainer width="100%" height={160}>
+                  <PieChart>
+                    <Pie data={d.riskDistribution.map((r) => ({ name: r.level, value: r.count, color: riskColor[r.level] ?? "#94a3b8" }))}
+                      cx="50%" cy="50%" innerRadius={45} outerRadius={70} dataKey="value">
+                      {d.riskDistribution.map((r, i) => <Cell key={i} fill={riskColor[r.level] ?? "#94a3b8"} />)}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="flex flex-wrap gap-3 justify-center mt-2">
+                  {d.riskDistribution.map((r) => (
+                    <div key={r.level} className="flex items-center gap-1.5 text-xs">
+                      <span className="w-2.5 h-2.5 rounded-full" style={{ background: riskColor[r.level] }} />
+                      <span className="capitalize text-slate-600">{r.level}</span>
+                      <span className="font-bold text-slate-800">{r.count}</span>
+                      <span className="text-slate-400">({Math.round((r.count / totalRisk) * 100)}%)</span>
+                    </div>
+                  ))}
+                </div>
+              </>}
+          </Card>
+
+          {/* Vaccination breakdown */}
+          <Card className="p-5">
+            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <Syringe className="w-4 h-4 text-indigo-600" />
+              Vaccination Breakdown
+            </h3>
+            <div className="space-y-3">
+              {[
+                { label: "Completed", value: d.vaccinations.completed, color: "bg-emerald-500", total: d.vaccinations.total },
+                { label: "Pending", value: d.vaccinations.pending, color: "bg-blue-400", total: d.vaccinations.total },
+                { label: "Delayed", value: d.vaccinations.delayed, color: "bg-amber-400", total: d.vaccinations.total },
+                { label: "Missed", value: d.vaccinations.missed, color: "bg-red-500", total: d.vaccinations.total },
+              ].map(({ label, value, color, total }) => (
+                <div key={label}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-600 font-medium">{label}</span>
+                    <span className="font-bold text-slate-800">{value} <span className="text-slate-400 font-normal">/ {total}</span></span>
+                  </div>
+                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full ${color} rounded-full transition-all`} style={{ width: `${total > 0 ? (value / total) * 100 : 0}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
+          {/* Checkup breakdown */}
+          <Card className="p-5">
+            <h3 className="font-bold text-slate-800 mb-4 flex items-center gap-2">
+              <HeartPulse className="w-4 h-4 text-indigo-600" />
+              Preventive Check-up Status
+            </h3>
+            <div className="space-y-3">
+              {[
+                { label: "Completed", value: d.checkups.completed, color: "bg-emerald-500", total: d.checkups.total },
+                { label: "Missed", value: d.checkups.missed, color: "bg-red-500", total: d.checkups.total },
+                { label: "Other", value: d.checkups.total - d.checkups.completed - d.checkups.missed, color: "bg-slate-300", total: d.checkups.total },
+              ].map(({ label, value, color, total }) => (
+                <div key={label}>
+                  <div className="flex justify-between text-xs mb-1">
+                    <span className="text-slate-600 font-medium">{label}</span>
+                    <span className="font-bold text-slate-800">{Math.max(0, value)} <span className="text-slate-400 font-normal">/ {total}</span></span>
+                  </div>
+                  <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className={`h-full ${color} rounded-full`} style={{ width: `${total > 0 ? (Math.max(0, value) / total) * 100 : 0}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* High Risk Tab */}
+      {activeTab === "risk" && d && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">High & Critical Risk Children</h3>
+            <span className="text-xs text-slate-500">{d.highRiskChildren.length} children flagged</span>
+          </div>
+          {d.highRiskChildren.length === 0
+            ? <Card className="p-8 text-center text-sm text-slate-400">No high-risk children identified</Card>
+            : d.highRiskChildren.map((child) => {
+              const ageMs = child.date_of_birth ? Date.now() - new Date(child.date_of_birth).getTime() : 0;
+              const ageMonths = Math.floor(ageMs / (1000 * 60 * 60 * 24 * 30.44));
+              const ageLabel = ageMonths >= 24 ? `${Math.floor(ageMonths / 12)}y` : `${ageMonths}mo`;
+              return (
+                <div key={child.id} className="bg-white border border-slate-200 rounded-xl px-5 py-4 flex items-start gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-red-50 flex items-center justify-center flex-shrink-0">
+                    <AlertOctagon className="w-5 h-5 text-red-500" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-semibold text-slate-900">{child.full_name}</p>
+                      <span className="text-xs text-slate-400">{ageLabel}</span>
+                      <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border capitalize ${riskBadge[child.level]}`}>{child.level}</span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">{child.municipality} · Score: {child.score}/100</p>
+                    {child.assigned_nurse && <p className="text-xs text-indigo-600 mt-0.5">Nurse: {child.assigned_nurse}</p>}
+                    {Array.isArray(child.reasons) && child.reasons.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {child.reasons.slice(0, 3).map((r, i) => (
+                          <span key={i} className="text-[10px] bg-red-50 text-red-700 border border-red-100 rounded-full px-2 py-0.5">{r}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <div className="flex-shrink-0 text-right">
+                    <div className="text-2xl font-bold text-red-600">{child.score}</div>
+                    <div className="text-[10px] text-slate-400">risk score</div>
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
+
+      {/* Healthcare Workers Tab */}
+      {activeTab === "workers" && d && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">Healthcare Worker Workload</h3>
+            <span className="text-xs text-slate-500">{d.healthcareWorkers.length} nurses/doctors</span>
+          </div>
+          {d.healthcareWorkers.length === 0
+            ? <Card className="p-8 text-center text-sm text-slate-400">No healthcare workers found</Card>
+            : d.healthcareWorkers.map((w) => (
+              <div key={w.id} className="bg-white border border-slate-200 rounded-xl px-5 py-4">
+                <div className="flex items-center gap-4 flex-wrap">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
+                    <UserCheck className="w-5 h-5 text-indigo-600" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="font-semibold text-slate-900">{w.name}</p>
+                    <p className="text-xs text-slate-500">{w.email} · {w.municipality || "—"}</p>
+                  </div>
+                  <div className="flex gap-6">
+                    {[
+                      { label: "Families", value: w.assigned_families, icon: Users },
+                      { label: "Done", value: w.visits_completed, icon: CheckCircle2 },
+                      { label: "Pending", value: w.visits_pending, icon: Clock },
+                    ].map(({ label, value, icon: Icon }) => (
+                      <div key={label} className="text-center">
+                        <p className="text-lg font-bold text-slate-900">{value}</p>
+                        <p className="text-[10px] text-slate-400 uppercase tracking-wide">{label}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+                {/* Workload bar */}
+                <div className="mt-3">
+                  <div className="flex justify-between text-[10px] text-slate-400 mb-1">
+                    <span>Visit completion rate</span>
+                    <span>{w.visits_completed + w.visits_pending > 0 ? Math.round((w.visits_completed / (w.visits_completed + w.visits_pending)) * 100) : 0}%</span>
+                  </div>
+                  <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-indigo-500 rounded-full" style={{ width: `${w.visits_completed + w.visits_pending > 0 ? (w.visits_completed / (w.visits_completed + w.visits_pending)) * 100 : 0}%` }} />
+                  </div>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+
+      {/* Overdue Vaccinations Tab */}
+      {activeTab === "overdue" && d && (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h3 className="font-semibold text-slate-800">Overdue Vaccinations</h3>
+            <span className="text-xs bg-red-50 text-red-700 border border-red-200 px-2.5 py-1 rounded-full font-semibold">{d.overdueVaccinations.length} overdue</span>
+          </div>
+          {d.overdueVaccinations.length === 0
+            ? <Card className="p-8 text-center text-sm text-emerald-600 font-semibold">All vaccinations are on schedule</Card>
+            : d.overdueVaccinations.map((v, i) => (
+              <div key={i} className="bg-white border border-red-100 rounded-xl px-5 py-3 flex items-center gap-4">
+                <div className={`w-2 h-10 rounded-full flex-shrink-0 ${v.days_overdue > 30 ? "bg-red-500" : v.days_overdue > 14 ? "bg-orange-400" : "bg-amber-400"}`} />
+                <div className="flex-1 min-w-0">
+                  <p className="font-semibold text-slate-900 text-sm">{v.full_name}</p>
+                  <p className="text-xs text-slate-500">{v.vaccine_name} · Due {new Date(v.recommended_date).toLocaleDateString()}</p>
+                  {v.assigned_nurse && <p className="text-xs text-indigo-600 mt-0.5">Nurse: {v.assigned_nurse}</p>}
+                </div>
+                <div className="text-right flex-shrink-0">
+                  <p className={`text-lg font-bold ${v.days_overdue > 30 ? "text-red-600" : v.days_overdue > 14 ? "text-orange-600" : "text-amber-600"}`}>{v.days_overdue}d</p>
+                  <p className="text-[10px] text-slate-400">overdue</p>
+                </div>
+              </div>
+            ))}
+        </div>
+      )}
+
+    </div>
+  );
+}
+
+// ─── AI Weekly Report ─────────────────────────────────────────────────────────
+
+function AIWeeklyReport({ user }: { user: SafeUser | null }) {
+  const [report, setReport] = useState<any>(null);
+  const [reportMeta, setReportMeta] = useState<any>(null);
+  const [reportLoading, setReportLoading] = useState(false);
+  const [reportError, setReportError] = useState("");
+
+  const generateWeeklyReport = async () => {
+    setReportLoading(true);
+    setReportError("");
+    setReport(null);
+    try {
+      const res = await apiRequest<{ report: any; meta: any }>("/municipality/report", { method: "POST" });
+      setReport(res.report);
+      setReportMeta(res.meta);
+    } catch (e: any) {
+      setReportError(e.message);
+    } finally {
+      setReportLoading(false);
+    }
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-6 space-y-5">
+      {/* Header */}
+      <div>
+        <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+          <Zap className="w-7 h-7 text-indigo-600" />
+          AI Weekly Municipality Report
+        </h1>
+        <p className="text-sm text-slate-500 mt-0.5">
+          {user?.municipality || "All Municipalities"} · Powered by Groq AI
+        </p>
+      </div>
+
+      {/* Generate card */}
+      <div className="bg-gradient-to-br from-indigo-900 to-indigo-700 rounded-2xl p-6 text-white">
+        <div className="flex items-start justify-between gap-4 flex-wrap">
+          <div>
+            <div className="flex items-center gap-2 mb-1">
+              <Zap className="w-5 h-5 text-indigo-300" />
+              <span className="text-indigo-300 text-xs font-bold uppercase tracking-widest">AI-Powered</span>
+            </div>
+            <h3 className="text-xl font-bold">Generate This Week's Report</h3>
+            <p className="text-indigo-200 text-sm mt-1">
+              Groq AI analyses your municipality's real-time health data and generates an official narrative report with findings, risk assessment, and urgent action items.
+            </p>
+            <ul className="mt-3 space-y-1">
+              {["Live data from your municipality's records", "Risk trend analysis", "Urgent intervention recommendations", "Workforce performance summary"].map((f) => (
+                <li key={f} className="flex items-center gap-2 text-xs text-indigo-200">
+                  <Check className="w-3.5 h-3.5 text-indigo-400 flex-shrink-0" />{f}
+                </li>
+              ))}
+            </ul>
+          </div>
+          <div className="flex flex-col gap-2 flex-shrink-0">
+            <button
+              onClick={generateWeeklyReport}
+              disabled={reportLoading}
+              className="flex items-center gap-2 bg-white text-indigo-700 font-bold px-5 py-3 rounded-xl hover:bg-indigo-50 disabled:opacity-50 transition-colors text-sm"
+            >
+              <Zap className={`w-4 h-4 ${reportLoading ? "animate-pulse" : ""}`} />
+              {reportLoading ? "Generating…" : report ? "Regenerate Report" : "Generate Report"}
+            </button>
+            {report && (
+              <button onClick={() => window.print()} className="flex items-center gap-2 border border-indigo-400 text-indigo-200 font-semibold px-5 py-2.5 rounded-xl hover:bg-indigo-800 transition-colors text-sm">
+                <Download className="w-4 h-4" />
+                Print / Export
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {reportError && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">{reportError}</div>}
+
+      {reportLoading && (
+        <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center">
+          <Zap className="w-10 h-10 text-indigo-300 mx-auto mb-3 animate-pulse" />
+          <p className="font-semibold text-slate-700">AI is analysing your municipality data…</p>
+          <p className="text-xs text-slate-400 mt-1">This takes about 10 seconds</p>
+        </div>
+      )}
+
+      {!report && !reportLoading && !reportError && (
+        <div className="bg-white border border-dashed border-slate-200 rounded-2xl p-12 text-center">
+          <Zap className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+          <p className="text-sm font-semibold text-slate-500">No report generated yet</p>
+          <p className="text-xs text-slate-400 mt-1">Click "Generate Report" above to create this week's AI health report</p>
+        </div>
+      )}
+
+      {report && reportMeta && !reportLoading && (
+        <div className="space-y-4">
+          {/* Report header */}
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 shadow-sm">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <ShieldCheck className="w-5 h-5 text-indigo-600" />
+                  <span className="text-xs font-bold text-indigo-600 uppercase tracking-widest">Official Report · Kosovo Child Health Platform</span>
+                </div>
+                <h2 className="text-xl font-bold text-slate-900">Weekly Preventive Care Report</h2>
+                <p className="text-sm text-slate-500 mt-0.5">{reportMeta.municipality} · Period: {reportMeta.period}</p>
+                <p className="text-xs text-slate-400 mt-1">Generated {new Date(reportMeta.generatedAt).toLocaleString()} by Groq AI</p>
+              </div>
+              <div className={`px-4 py-2 rounded-xl border-2 font-bold text-sm capitalize flex items-center gap-2 ${
+                report.trend === "improving" ? "bg-emerald-50 border-emerald-300 text-emerald-700"
+                : report.trend === "deteriorating" ? "bg-red-50 border-red-300 text-red-700"
+                : "bg-amber-50 border-amber-300 text-amber-700"
+              }`}>
+                {report.trend === "improving" ? <TrendingUp className="w-4 h-4" /> : report.trend === "deteriorating" ? <AlertOctagon className="w-4 h-4" /> : <Activity className="w-4 h-4" />}
+                {report.trend}
+              </div>
+            </div>
+
+            <div className="mt-4 bg-indigo-50 border border-indigo-100 rounded-xl px-4 py-3">
+              <p className="text-sm font-semibold text-indigo-900">{report.headline}</p>
+              {report.trendReason && <p className="text-xs text-indigo-600 mt-1">{report.trendReason}</p>}
+            </div>
+
+            {reportMeta.dataSnapshot && (
+              <div className="mt-4 grid grid-cols-3 sm:grid-cols-6 gap-3">
+                {[
+                  { label: "Children", value: reportMeta.dataSnapshot.totalChildren },
+                  { label: "Vac. Coverage", value: `${reportMeta.dataSnapshot.vaccinationCoverage}%` },
+                  { label: "Overdue Vac.", value: reportMeta.dataSnapshot.overdueVaccinations, alert: reportMeta.dataSnapshot.overdueVaccinations > 0 },
+                  { label: "New High Risk", value: reportMeta.dataSnapshot.newHighRisk, alert: reportMeta.dataSnapshot.newHighRisk > 0 },
+                  { label: "Resolved", value: reportMeta.dataSnapshot.resolvedCases },
+                  { label: "Visits / Week", value: reportMeta.dataSnapshot.visitsThisWeek },
+                ].map(({ label, value, alert }) => (
+                  <div key={label} className={`rounded-xl p-3 text-center border ${alert ? "bg-red-50 border-red-100" : "bg-slate-50 border-slate-100"}`}>
+                    <p className={`text-lg font-bold ${alert ? "text-red-700" : "text-slate-900"}`}>{value}</p>
+                    <p className="text-[10px] text-slate-500 leading-tight">{label}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {report.keyFindings?.length > 0 && (
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm">
+              <h4 className="font-bold text-slate-800 flex items-center gap-2 mb-3">
+                <FileText className="w-4 h-4 text-indigo-600" /> Key Findings
+              </h4>
+              <ul className="space-y-2">
+                {report.keyFindings.map((f: string, i: number) => (
+                  <li key={i} className="flex items-start gap-3 text-sm text-slate-700">
+                    <span className="w-5 h-5 rounded-full bg-indigo-100 text-indigo-700 text-[10px] font-bold flex items-center justify-center flex-shrink-0 mt-0.5">{i + 1}</span>
+                    {f}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <div className="grid gap-4 sm:grid-cols-3">
+            {[
+              { title: "Risk Assessment", content: report.riskSummary, icon: AlertOctagon, color: "text-red-600" },
+              { title: "Vaccination Status", content: report.vaccinationSummary, icon: Syringe, color: "text-indigo-600" },
+              { title: "Workforce Activity", content: report.workforceSummary, icon: UserCheck, color: "text-emerald-600" },
+            ].filter(({ content }) => content).map(({ title, content, icon: Icon, color }) => (
+              <Card key={title} className="p-4">
+                <h5 className={`font-bold text-sm flex items-center gap-1.5 mb-2 ${color}`}>
+                  <Icon className="w-4 h-4" />{title}
+                </h5>
+                <p className="text-xs text-slate-600 leading-relaxed">{content}</p>
+              </Card>
+            ))}
+          </div>
+
+          {report.urgentActions?.length > 0 && (
+            <div className="bg-red-50 border border-red-200 rounded-2xl p-5">
+              <h4 className="font-bold text-red-800 flex items-center gap-2 mb-3">
+                <BadgeAlert className="w-4 h-4" /> Urgent Actions Required
+              </h4>
+              <ul className="space-y-2">
+                {report.urgentActions.map((a: string, i: number) => (
+                  <li key={i} className="flex items-start gap-3 text-sm text-red-700">
+                    <AlertTriangle className="w-4 h-4 flex-shrink-0 mt-0.5 text-red-500" />
+                    {a}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <p className="text-center text-xs text-slate-400 pb-2">
+            Report generated by SAFE Platform AI · {reportMeta.municipality} · {new Date(reportMeta.generatedAt).toLocaleString()}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Admin Dashboard ──────────────────────────────────────────────────────────
 
 function AdminDashboard() {
@@ -3639,6 +4202,8 @@ export default function App() {
           {activePage === "visit" && <HomeVisitForm />}
           {activePage === "timeline" && <LiveChildTimeline />}
           {activePage === "ai-risk" && <AIRiskDashboard />}
+          {activePage === "municipality" && <MunicipalityDashboard user={user} />}
+          {activePage === "ai-report" && <AIWeeklyReport user={user} />}
           {activePage === "admin" && <AdminDashboard />}
           {activePage === "messaging" && <MessagingModule user={user} />}
           {activePage === "settings" && <SettingsPage user={user} onUserUpdate={setUser} />}

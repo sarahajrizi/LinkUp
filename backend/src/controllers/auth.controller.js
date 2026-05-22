@@ -7,22 +7,29 @@ const publicUser = (user) => ({
   name: user.name,
   email: user.email,
   role: user.role,
+  municipality: user.municipality || undefined,
 });
 
 export async function register(req, res) {
-  const { name, email, password, role = 'parent' } = req.body;
-  if (!['parent', 'doctor'].includes(role)) {
-    const error = new Error('Public registration only supports parent or doctor roles');
+  const { name, email, password, role = 'parent', municipality } = req.body;
+  if (!['parent', 'doctor', 'municipality'].includes(role)) {
+    const error = new Error('Public registration only supports parent, doctor, or municipality roles');
+    error.status = 400;
+    throw error;
+  }
+
+  if (role === 'municipality' && !municipality) {
+    const error = new Error('Municipality is required for municipality accounts');
     error.status = 400;
     throw error;
   }
 
   const passwordHash = await bcrypt.hash(password, 10);
   const { rows } = await query(
-    `INSERT INTO users (name, email, password_hash, role)
-     VALUES ($1, lower($2), $3, $4)
-     RETURNING id, name, email, role`,
-    [name, email, passwordHash, role],
+    `INSERT INTO users (name, email, password_hash, role, municipality)
+     VALUES ($1, lower($2), $3, $4, $5)
+     RETURNING id, name, email, role, municipality`,
+    [name, email, passwordHash, role, municipality || null],
   );
   const user = rows[0];
   res.status(201).json({ user: publicUser(user), token: signToken(user) });

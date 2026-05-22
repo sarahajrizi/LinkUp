@@ -12,7 +12,7 @@ export type SafeUser = {
   id: string;
   name: string;
   email: string;
-  role: "parent" | "doctor" | "admin";
+  role: "parent" | "doctor" | "admin" | "municipality";
   phone?: string;
   municipality?: string;
   address?: string;
@@ -65,10 +65,10 @@ export async function login(email: string, password: string) {
   return data;
 }
 
-export async function registerAccount(name: string, email: string, password: string, role: "parent" | "doctor") {
+export async function registerAccount(name: string, email: string, password: string, role: "parent" | "doctor" | "municipality", municipality?: string) {
   const data = await apiRequest<{ token: string; user: SafeUser }>("/auth/register", {
     method: "POST",
-    body: { name, email, password, role },
+    body: { name, email, password, role, ...(municipality ? { municipality } : {}) },
     token: null,
   });
   storeSession(data.token, data.user);

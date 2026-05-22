@@ -13,6 +13,7 @@ import userRoutes from './routes/users.routes.js';
 import visitRoutes from './routes/visits.routes.js';
 import chatRoutes from './routes/chat.routes.js';
 import passportRoutes from './routes/passport.routes.js';
+import municipalityRoutes from './routes/municipality.routes.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export const app = express();
@@ -36,6 +37,7 @@ app.use('/api/risk', riskRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/chat', chatRoutes);
 app.use('/api/passport', passportRoutes);
+app.use('/api/municipality', municipalityRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);

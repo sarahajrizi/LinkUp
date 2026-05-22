@@ -13,7 +13,7 @@ export async function requireAuth(req, _res, next) {
     }
 
     const payload = jwt.verify(token, env.jwtSecret);
-    const { rows } = await query('SELECT id, name, email, role FROM users WHERE id = $1', [payload.sub]);
+    const { rows } = await query('SELECT id, name, email, role, municipality FROM users WHERE id = $1', [payload.sub]);
     if (!rows[0]) {
       const error = new Error('User no longer exists');
       error.status = 401;

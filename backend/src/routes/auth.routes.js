@@ -12,7 +12,7 @@ router.post(
     name: { required: true, type: 'string' },
     email: { required: true, type: 'string' },
     password: { required: true, type: 'string', minLength: 8 },
-    role: { enum: ['parent', 'doctor'] },
+    role: { enum: ['parent', 'doctor', 'municipality'] },
   }),
   asyncHandler(register),
 );
