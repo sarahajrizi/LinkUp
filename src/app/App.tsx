@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   Home, Lock, Heart, Stethoscope, ClipboardList, Activity,
   AlertTriangle, BarChart3, MessageSquare, Settings, Bell,
@@ -1029,6 +1029,13 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState("");
   const [newChild, setNewChild] = useState({ fullName: "", dateOfBirth: "", gender: "female" });
+
+  // AI chat state
+  const [chatOpen, setChatOpen] = useState(false);
+  const [chatMessages, setChatMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
+  const [chatInput, setChatInput] = useState("");
+  const [chatLoading, setChatLoading] = useState(false);
+  const chatBottomRef = useRef<HTMLDivElement>(null);
   const [childMessage, setChildMessage] = useState("");
   const [appointmentMessage, setAppointmentMessage] = useState("");
   const [selectedChildId, setSelectedChildId] = useState("");
@@ -1099,6 +1106,27 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
     setAppointmentMessage(action === "confirm" ? "Appointment confirmed." : action === "reschedule" ? "New time requested." : "Appointment cancelled.");
     const data = await apiRequest<AppointmentsResponse>("/appointments");
     setAppointments(data.appointments);
+  };
+
+  const sendChatMessage = async () => {
+    const text = chatInput.trim();
+    if (!text || chatLoading) return;
+    const next = [...chatMessages, { role: "user" as const, content: text }];
+    setChatMessages(next);
+    setChatInput("");
+    setChatLoading(true);
+    try {
+      const data = await apiRequest<{ reply: string }>("/chat", {
+        method: "POST",
+        body: { messages: next },
+      });
+      setChatMessages([...next, { role: "assistant", content: data.reply }]);
+    } catch {
+      setChatMessages([...next, { role: "assistant", content: "Sorry, I could not reach the AI service. Please try again." }]);
+    } finally {
+      setChatLoading(false);
+      setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+    }
   };
 
   const upcomingVaccines: any[] = [];
@@ -1468,6 +1496,90 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
           </button>
         </Card>
       )}
+
+      {/* AI Chat Widget */}
+      <div className="fixed bottom-6 right-6 z-50 flex flex-col items-end gap-3">
+        {chatOpen && (
+          <div className="w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-slate-200 flex flex-col overflow-hidden" style={{ height: 480 }}>
+            {/* Header */}
+            <div className="flex items-center gap-3 px-4 py-3 bg-indigo-600">
+              <div className="w-8 h-8 rounded-full bg-indigo-400 flex items-center justify-center">
+                <Zap className="w-4 h-4 text-white" />
+              </div>
+              <div className="flex-1">
+                <p className="text-sm font-semibold text-white">AI Health Assistant</p>
+                <p className="text-xs text-indigo-200">Ask about your child's health</p>
+              </div>
+              <button onClick={() => setChatOpen(false)} className="text-indigo-200 hover:text-white transition-colors">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Messages */}
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-slate-50">
+              {chatMessages.length === 0 && (
+                <div className="text-center pt-8">
+                  <Zap className="w-10 h-10 text-indigo-200 mx-auto mb-3" />
+                  <p className="text-sm font-semibold text-slate-700">Hi {user?.name?.split(" ")[0] || "there"}!</p>
+                  <p className="text-xs text-slate-500 mt-1">Ask me anything about your child's vaccinations, appointments, or milestones.</p>
+                  <div className="mt-4 flex flex-col gap-2">
+                    {["Is my child's vaccination up to date?", "When is the next appointment?", "What milestones should I expect?"].map((q) => (
+                      <button key={q} onClick={() => { setChatInput(q); }} className="text-left text-xs bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-600 hover:border-indigo-300 hover:text-indigo-700 transition-colors">
+                        {q}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {chatMessages.map((msg, i) => (
+                <div key={i} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+                  <div className={`max-w-[80%] rounded-2xl px-3 py-2 text-sm leading-relaxed whitespace-pre-wrap ${msg.role === "user" ? "bg-indigo-600 text-white rounded-br-sm" : "bg-white border border-slate-200 text-slate-700 rounded-bl-sm"}`}>
+                    {msg.content}
+                  </div>
+                </div>
+              ))}
+              {chatLoading && (
+                <div className="flex justify-start">
+                  <div className="bg-white border border-slate-200 rounded-2xl rounded-bl-sm px-4 py-2.5 flex gap-1.5">
+                    <span className="w-2 h-2 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <span className="w-2 h-2 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <span className="w-2 h-2 rounded-full bg-slate-300 animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </div>
+              )}
+              <div ref={chatBottomRef} />
+            </div>
+
+            {/* Input */}
+            <div className="px-3 py-3 border-t border-slate-100 bg-white flex gap-2">
+              <input
+                className="flex-1 text-sm border border-slate-200 rounded-xl px-3 py-2 outline-none focus:border-indigo-400 transition-colors"
+                placeholder="Type a message…"
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendChatMessage()}
+                disabled={chatLoading}
+              />
+              <button
+                onClick={sendChatMessage}
+                disabled={chatLoading || !chatInput.trim()}
+                className="w-9 h-9 rounded-xl bg-indigo-600 flex items-center justify-center text-white hover:bg-indigo-700 disabled:opacity-40 transition-colors flex-shrink-0"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Toggle button */}
+        <button
+          onClick={() => setChatOpen((o) => !o)}
+          className="w-14 h-14 rounded-full bg-indigo-600 shadow-lg flex items-center justify-center text-white hover:bg-indigo-700 transition-all hover:scale-105 active:scale-95"
+          aria-label="Open AI health assistant"
+        >
+          {chatOpen ? <X className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
+        </button>
+      </div>
     </div>
   );
 }

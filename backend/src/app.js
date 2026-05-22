@@ -11,6 +11,7 @@ import riskRoutes from './routes/risk.routes.js';
 import settingsRoutes from './routes/settings.routes.js';
 import userRoutes from './routes/users.routes.js';
 import visitRoutes from './routes/visits.routes.js';
+import chatRoutes from './routes/chat.routes.js';
 import { errorHandler, notFoundHandler } from './middleware/error.js';
 
 export const app = express();
@@ -32,6 +33,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/risk', riskRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/chat', chatRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
