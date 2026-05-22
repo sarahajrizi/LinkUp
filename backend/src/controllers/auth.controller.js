@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs';
 import { query } from '../db/pool.js';
+import { notifyUserRegistered } from '../services/notification.service.js';
 import { signToken } from '../utils/tokens.js';
 
 const publicUser = (user) => ({
@@ -32,6 +33,7 @@ export async function register(req, res) {
     [name, email, passwordHash, role, municipality || null],
   );
   const user = rows[0];
+  await notifyUserRegistered({ userId: user.id, role: user.role });
   res.status(201).json({ user: publicUser(user), token: signToken(user) });
 }
 

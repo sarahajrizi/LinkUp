@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs';
 import { query } from '../db/pool.js';
 import { audit } from '../services/audit.service.js';
+import { notifyCareAssignmentCreated } from '../services/notification.service.js';
 
 function publicUser(user) {
   return {
@@ -18,22 +19,32 @@ export async function listCareTeam(req, res) {
   let rows;
   if (req.user.role === 'parent') {
     ({ rows } = await query(
-      `SELECT DISTINCT u.id, u.name, u.email, u.role, u.phone, u.municipality, u.address,
-              ca.relationship, ca.child_id, ca.status
-       FROM care_assignments ca
-       JOIN users u ON u.id = ca.provider_id
-       WHERE ca.parent_id = $1 AND ca.status = 'active'
-       ORDER BY u.name`,
+      `(SELECT DISTINCT u.id, u.name, u.email, u.role, u.phone, u.municipality, u.address,
+               ca.relationship, ca.child_id, ca.status
+        FROM care_assignments ca
+        JOIN users u ON u.id = ca.provider_id
+        WHERE ca.parent_id = $1 AND ca.status = 'active')
+       UNION
+       (SELECT id, name, email, role, phone, municipality, address,
+               'support' AS relationship, null::uuid AS child_id, 'active' AS status
+        FROM users
+        WHERE role = 'admin')
+       ORDER BY name`,
       [req.user.id],
     ));
   } else if (req.user.role === 'doctor') {
     ({ rows } = await query(
-      `SELECT DISTINCT u.id, u.name, u.email, u.role, u.phone, u.municipality, u.address,
-              ca.relationship, ca.child_id, ca.status
-       FROM care_assignments ca
-       JOIN users u ON u.id = ca.parent_id
-       WHERE ca.provider_id = $1 AND ca.status = 'active'
-       ORDER BY u.name`,
+      `(SELECT DISTINCT u.id, u.name, u.email, u.role, u.phone, u.municipality, u.address,
+               ca.relationship, ca.child_id, ca.status
+        FROM care_assignments ca
+        JOIN users u ON u.id = ca.parent_id
+        WHERE ca.provider_id = $1 AND ca.status = 'active')
+       UNION
+       (SELECT id, name, email, role, phone, municipality, address,
+               'support' AS relationship, null::uuid AS child_id, 'active' AS status
+        FROM users
+        WHERE role = 'admin')
+       ORDER BY name`,
       [req.user.id],
     ));
   } else {
@@ -88,7 +99,7 @@ export async function listAssignments(req, res) {
 export async function createAssignment(req, res) {
   const { parentId, providerId, childId, relationship, notes } = req.body;
   const { rows: users } = await query(
-    `SELECT id, role FROM users WHERE id IN ($1, $2)`,
+    `SELECT id, role, name, email FROM users WHERE id IN ($1, $2)`,
     [parentId, providerId],
   );
   const parent = users.find((user) => user.id === parentId);
@@ -116,6 +127,17 @@ export async function createAssignment(req, res) {
      RETURNING *`,
     [parentId, providerId, childId || null, relationship || null, notes || null],
   );
+  const { rows: childRows } = childId
+    ? await query('SELECT full_name FROM children WHERE id = $1', [childId])
+    : { rows: [] };
+  await notifyCareAssignmentCreated({
+    parentId,
+    providerId,
+    childId: childId || null,
+    parentName: parent.name,
+    providerName: provider.name,
+    childName: childRows[0]?.full_name || null,
+  });
   await audit(req.user.id, 'create', 'care_assignment', rows[0].id, { parentId, providerId, childId });
   res.status(201).json({ assignment: rows[0] });
 }

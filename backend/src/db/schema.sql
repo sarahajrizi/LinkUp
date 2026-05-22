@@ -142,11 +142,28 @@ CREATE TABLE IF NOT EXISTS home_visits (
   development_notes text,
   environment_notes text,
   risk_notes text,
+  temperature numeric(4,1),
+  weight_kg numeric(5,2),
+  height_cm numeric(5,2),
+  symptoms text,
+  recommended_actions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  risk_level risk_level,
+  next_visit_at timestamptz,
+  follow_up_appointment_id uuid,
   offline_client_id text,
   synced_at timestamptz NOT NULL DEFAULT now(),
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS temperature numeric(4,1);
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS weight_kg numeric(5,2);
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS height_cm numeric(5,2);
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS symptoms text;
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS recommended_actions jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS risk_level risk_level;
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS next_visit_at timestamptz;
+ALTER TABLE home_visits ADD COLUMN IF NOT EXISTS follow_up_appointment_id uuid;
 
 CREATE TABLE IF NOT EXISTS appointments (
   id uuid PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -212,8 +229,23 @@ CREATE TABLE IF NOT EXISTS risk_assessments (
   score int NOT NULL CHECK (score >= 0 AND score <= 100),
   level risk_level NOT NULL,
   reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ai_summary text,
+  ai_recommended_actions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ai_urgency text,
+  ai_model text,
+  generated_by text NOT NULL DEFAULT 'rules',
+  reviewed_by_provider_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at timestamptz,
   generated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_summary text;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_recommended_actions jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_urgency text;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_model text;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS generated_by text NOT NULL DEFAULT 'rules';
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS reviewed_by_provider_id uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS user_settings (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
