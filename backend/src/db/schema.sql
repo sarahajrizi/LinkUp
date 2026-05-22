@@ -229,8 +229,23 @@ CREATE TABLE IF NOT EXISTS risk_assessments (
   score int NOT NULL CHECK (score >= 0 AND score <= 100),
   level risk_level NOT NULL,
   reasons jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ai_summary text,
+  ai_recommended_actions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  ai_urgency text,
+  ai_model text,
+  generated_by text NOT NULL DEFAULT 'rules',
+  reviewed_by_provider_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  reviewed_at timestamptz,
   generated_at timestamptz NOT NULL DEFAULT now()
 );
+
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_summary text;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_recommended_actions jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_urgency text;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS ai_model text;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS generated_by text NOT NULL DEFAULT 'rules';
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS reviewed_by_provider_id uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE risk_assessments ADD COLUMN IF NOT EXISTS reviewed_at timestamptz;
 
 CREATE TABLE IF NOT EXISTS user_settings (
   user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
