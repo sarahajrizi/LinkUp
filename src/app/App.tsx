@@ -8,7 +8,8 @@ import {
   Globe, Eye, EyeOff, AlertCircle,
   ChevronRight, ChevronDown, Zap, Users, MoreHorizontal,
   Building2, Syringe, Info, Check, RefreshCw, MapPin,
-  Star, FileText, Mail
+  Star, FileText, Mail, QrCode, ShieldCheck, Fingerprint,
+  CalendarDays, Thermometer, AlertOctagon, ScanLine
 } from "lucide-react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
@@ -19,7 +20,7 @@ import { apiRequest, clearSession, getStoredToken, getStoredUser, login, registe
 type Page =
   | "landing" | "login" | "parent" | "nurse"
   | "visit" | "timeline" | "ai-risk" | "admin"
-  | "messaging" | "settings";
+  | "messaging" | "settings" | "passport";
 
 interface NavItem {
   id: Page;
@@ -32,6 +33,7 @@ const navItems: NavItem[] = [
   { id: "landing", label: "Platform Overview", icon: Home, group: "Explore" },
   { id: "login", label: "Login / Auth", icon: Lock, group: "Explore" },
   { id: "parent", label: "Family Portal", icon: Heart, group: "Portals" },
+  { id: "passport", label: "Health Passport", icon: Shield, group: "Portals" },
   { id: "nurse", label: "Nurse App", icon: Stethoscope, group: "Portals" },
   { id: "visit", label: "Home Visit Form", icon: ClipboardList, group: "Portals" },
   { id: "timeline", label: "Child Timeline", icon: Activity, group: "Clinical" },
@@ -42,8 +44,8 @@ const navItems: NavItem[] = [
 ];
 
 const pagesByRole: Record<SafeUser["role"], Page[]> = {
-  parent: ["parent", "timeline", "messaging", "settings"],
-  doctor: ["nurse", "visit", "timeline", "ai-risk", "messaging", "settings"],
+  parent: ["parent", "passport", "timeline", "messaging", "settings"],
+  doctor: ["nurse", "passport", "visit", "timeline", "ai-risk", "messaging", "settings"],
   admin: ["admin", "ai-risk", "nurse", "messaging", "settings"],
 };
 
@@ -1121,8 +1123,9 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
         body: { messages: next },
       });
       setChatMessages([...next, { role: "assistant", content: data.reply }]);
-    } catch {
-      setChatMessages([...next, { role: "assistant", content: "Sorry, I could not reach the AI service. Please try again." }]);
+    } catch (err) {
+      console.error("Chat error:", err);
+      setChatMessages([...next, { role: "assistant", content: `Error: ${err instanceof Error ? err.message : "Could not reach the AI service."}` }]);
     } finally {
       setChatLoading(false);
       setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
@@ -1524,7 +1527,20 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
                   <p className="text-xs text-slate-500 mt-1">Ask me anything about your child's vaccinations, appointments, or milestones.</p>
                   <div className="mt-4 flex flex-col gap-2">
                     {["Is my child's vaccination up to date?", "When is the next appointment?", "What milestones should I expect?"].map((q) => (
-                      <button key={q} onClick={() => { setChatInput(q); }} className="text-left text-xs bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-600 hover:border-indigo-300 hover:text-indigo-700 transition-colors">
+                      <button key={q} onClick={async () => {
+                        const next = [...chatMessages, { role: "user" as const, content: q }];
+                        setChatMessages(next);
+                        setChatLoading(true);
+                        try {
+                          const data = await apiRequest<{ reply: string }>("/chat", { method: "POST", body: { messages: next } });
+                          setChatMessages([...next, { role: "assistant", content: data.reply }]);
+                        } catch {
+                          setChatMessages([...next, { role: "assistant", content: "Sorry, I could not reach the AI service. Please try again." }]);
+                        } finally {
+                          setChatLoading(false);
+                          setTimeout(() => chatBottomRef.current?.scrollIntoView({ behavior: "smooth" }), 50);
+                        }
+                      }} className="text-left text-xs bg-white border border-slate-200 rounded-lg px-3 py-2 text-slate-600 hover:border-indigo-300 hover:text-indigo-700 transition-colors">
                         {q}
                       </button>
                     ))}
@@ -1580,6 +1596,392 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
           {chatOpen ? <X className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
         </button>
       </div>
+    </div>
+  );
+}
+
+// ─── Health Passport ──────────────────────────────────────────────────────────
+
+type PassportData = {
+  child: {
+    id: string; full_name: string; date_of_birth: string; gender: string;
+    parent_name: string; parent_phone: string; municipality: string;
+  };
+  vaccinations: { vaccine_name: string; status: string; recommended_date: string; scheduled_date: string; completed_date?: string }[];
+  checkups: { checkup_type: string; status: string; scheduled_date: string; completed_date?: string; notes?: string }[];
+  milestones: { title: string; status: string; expected_date: string; achieved_date?: string }[];
+  recentVisits: { visited_at: string; nurse_name: string; notes?: string; nutrition_status?: string; risk_flags?: string }[];
+  appointments: { type: string; scheduled_at: string; status: string }[];
+  risk: { score: number; level: string; reasons: string[] } | null;
+};
+
+function HealthPassport({ user }: { user: SafeUser | null }) {
+  const [children, setChildren] = useState<any[]>([]);
+  const [selectedChildId, setSelectedChildId] = useState<string>("");
+  const [passport, setPassport] = useState<PassportData | null>(null);
+  const [qrDataUrl, setQrDataUrl] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+  const [qrLoading, setQrLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [activeSection, setActiveSection] = useState<"overview" | "vaccinations" | "visits" | "appointments">("overview");
+  const [tokenExpiry, setTokenExpiry] = useState<Date | null>(null);
+
+  useEffect(() => {
+    apiRequest<{ children: any[] }>("/children").then((d) => {
+      setChildren(d.children);
+      if (d.children[0]) setSelectedChildId(d.children[0].id);
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!selectedChildId) return;
+    setLoading(true);
+    setError("");
+    setPassport(null);
+    setQrDataUrl("");
+    apiRequest<{ passport: PassportData }>(`/passport/${selectedChildId}`)
+      .then((d) => setPassport(d.passport))
+      .catch((e) => setError(e.message))
+      .finally(() => setLoading(false));
+  }, [selectedChildId]);
+
+  const generateQR = async () => {
+    if (!selectedChildId) return;
+    setQrLoading(true);
+    try {
+      const { token } = await apiRequest<{ token: string }>(`/passport/${selectedChildId}/token`, { method: "POST" });
+      const verifyUrl = `${window.location.origin}/?verify=${encodeURIComponent(token)}`;
+      const QRCode = await import("qrcode");
+      const url = await QRCode.toDataURL(verifyUrl, {
+        width: 280,
+        margin: 2,
+        color: { dark: "#1E1B4B", light: "#FFFFFF" },
+      });
+      setQrDataUrl(url);
+      setTokenExpiry(new Date(Date.now() + 15 * 60 * 1000));
+    } catch (e: any) {
+      setError(e.message);
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  const child = passport?.child;
+  const dob = child?.date_of_birth ? new Date(child.date_of_birth) : null;
+  const ageMonths = dob ? Math.floor((Date.now() - dob.getTime()) / (1000 * 60 * 60 * 24 * 30.44)) : 0;
+  const ageLabel = ageMonths >= 24 ? `${Math.floor(ageMonths / 12)} yrs` : `${ageMonths} mo`;
+
+  const vacCompleted = passport?.vaccinations.filter((v) => v.status === "completed").length ?? 0;
+  const vacTotal = passport?.vaccinations.length ?? 0;
+  const vacMissed = passport?.vaccinations.filter((v) => v.status === "missed").length ?? 0;
+
+  const riskColor = {
+    low: "text-emerald-600 bg-emerald-50 border-emerald-200",
+    moderate: "text-amber-600 bg-amber-50 border-amber-200",
+    high: "text-orange-600 bg-orange-50 border-orange-200",
+    critical: "text-red-600 bg-red-50 border-red-200",
+  }[passport?.risk?.level ?? "low"] ?? "text-slate-600 bg-slate-50 border-slate-200";
+
+  const statusBadge = (status: string) => {
+    const map: Record<string, string> = {
+      completed: "text-emerald-700 bg-emerald-50 border border-emerald-200",
+      missed: "text-red-700 bg-red-50 border border-red-200",
+      pending: "text-blue-700 bg-blue-50 border border-blue-200",
+      delayed: "text-amber-700 bg-amber-50 border border-amber-200",
+    };
+    return map[status] ?? "text-slate-600 bg-slate-50 border border-slate-200";
+  };
+
+  return (
+    <div className="max-w-4xl mx-auto px-4 py-6 space-y-6">
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 flex items-center gap-2">
+            <ShieldCheck className="w-7 h-7 text-indigo-600" />
+            Health Passport
+          </h1>
+          <p className="text-sm text-slate-500 mt-0.5">Digital healthcare identity — Kosovo Child Health Platform</p>
+        </div>
+        {children.length > 1 && (
+          <select
+            className="text-sm border border-slate-200 rounded-xl px-3 py-2 bg-white outline-none focus:border-indigo-400"
+            value={selectedChildId}
+            onChange={(e) => setSelectedChildId(e.target.value)}
+          >
+            {children.map((c) => <option key={c.id} value={c.id}>{c.full_name}</option>)}
+          </select>
+        )}
+      </div>
+
+      {error && <div className="bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm">{error}</div>}
+      {loading && <div className="text-center py-16 text-slate-400 text-sm">Loading passport…</div>}
+
+      {passport && (
+        <div className="space-y-6">
+          {/* Passport Card */}
+          <div className="relative rounded-2xl overflow-hidden shadow-xl" style={{ background: "linear-gradient(135deg, #1E1B4B 0%, #312E81 50%, #4338CA 100%)" }}>
+            {/* Background pattern */}
+            <div className="absolute inset-0 opacity-10" style={{ backgroundImage: "radial-gradient(circle at 20% 50%, white 1px, transparent 1px), radial-gradient(circle at 80% 20%, white 1px, transparent 1px)", backgroundSize: "40px 40px" }} />
+            <div className="relative p-6 sm:p-8">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="flex items-center gap-4">
+                  {/* Avatar */}
+                  <div className="w-16 h-16 rounded-2xl bg-white/20 backdrop-blur flex items-center justify-center flex-shrink-0 border border-white/30">
+                    <span className="text-white text-2xl font-bold">{child?.full_name.split(" ").map((p) => p[0]).join("").slice(0, 2).toUpperCase()}</span>
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-indigo-300 text-xs font-bold uppercase tracking-widest">Republic of Kosovo</span>
+                      <ShieldCheck className="w-3.5 h-3.5 text-indigo-300" />
+                    </div>
+                    <h2 className="text-white text-2xl font-bold">{child?.full_name}</h2>
+                    <p className="text-indigo-200 text-sm mt-0.5">{ageLabel} · {child?.gender} · {child?.municipality || "Kosovo"}</p>
+                  </div>
+                </div>
+                {/* Passport ID badge */}
+                <div className="text-right">
+                  <p className="text-indigo-300 text-[10px] font-bold uppercase tracking-wider">Passport ID</p>
+                  <p className="text-white font-mono text-sm">{child?.id.split("-")[0].toUpperCase()}</p>
+                  <div className="mt-2 flex items-center gap-1 justify-end">
+                    <Fingerprint className="w-3.5 h-3.5 text-indigo-300" />
+                    <span className="text-indigo-300 text-[10px]">Digitally Signed</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Stats row */}
+              <div className="mt-6 grid grid-cols-3 gap-3">
+                {[
+                  { label: "Vaccines Done", value: `${vacCompleted}/${vacTotal}`, icon: Syringe, ok: vacMissed === 0 },
+                  { label: "Risk Level", value: passport.risk?.level ?? "N/A", icon: AlertOctagon, ok: !["high", "critical"].includes(passport.risk?.level ?? "") },
+                  { label: "Visits", value: String(passport.recentVisits.length), icon: CalendarDays, ok: true },
+                ].map(({ label, value, icon: Icon, ok }) => (
+                  <div key={label} className="bg-white/10 backdrop-blur rounded-xl p-3 border border-white/20">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <Icon className={`w-3.5 h-3.5 ${ok ? "text-emerald-300" : "text-red-300"}`} />
+                      <span className="text-indigo-200 text-[10px] uppercase tracking-wide font-semibold">{label}</span>
+                    </div>
+                    <p className="text-white font-bold text-lg capitalize">{value}</p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* QR Code section */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6">
+            <div className="flex items-start justify-between gap-6 flex-wrap">
+              <div className="flex-1">
+                <h3 className="font-bold text-slate-900 flex items-center gap-2">
+                  <QrCode className="w-5 h-5 text-indigo-600" />
+                  Scan-to-Verify QR Code
+                </h3>
+                <p className="text-sm text-slate-500 mt-1">Generate a secure, time-limited QR code. Healthcare providers scan it to instantly view this child's full health record.</p>
+                <ul className="mt-3 space-y-1.5">
+                  {["Valid for 15 minutes only", "Cryptographically signed", "No account required to scan", "Audit-logged on every scan"].map((f) => (
+                    <li key={f} className="flex items-center gap-2 text-xs text-slate-600">
+                      <Check className="w-3.5 h-3.5 text-emerald-500 flex-shrink-0" />
+                      {f}
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  onClick={generateQR}
+                  disabled={qrLoading}
+                  className="mt-4 flex items-center gap-2 bg-indigo-600 text-white text-sm font-semibold px-5 py-2.5 rounded-xl hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+                >
+                  <ScanLine className="w-4 h-4" />
+                  {qrLoading ? "Generating…" : qrDataUrl ? "Regenerate QR" : "Generate QR Code"}
+                </button>
+                {tokenExpiry && qrDataUrl && (
+                  <p className="text-xs text-amber-600 mt-2 flex items-center gap-1">
+                    <Clock className="w-3 h-3" />
+                    Expires at {tokenExpiry.toLocaleTimeString()}
+                  </p>
+                )}
+              </div>
+              {qrDataUrl ? (
+                <div className="flex flex-col items-center gap-2">
+                  <div className="p-3 bg-white rounded-2xl border-2 border-indigo-100 shadow-inner">
+                    <img src={qrDataUrl} alt="Health Passport QR" width={160} height={160} />
+                  </div>
+                  <p className="text-[10px] text-slate-400 text-center">Scan with any camera<br />or QR reader</p>
+                </div>
+              ) : (
+                <div className="w-40 h-40 rounded-2xl border-2 border-dashed border-slate-200 flex items-center justify-center">
+                  <QrCode className="w-12 h-12 text-slate-200" />
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Section tabs */}
+          <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
+            {(["overview", "vaccinations", "visits", "appointments"] as const).map((s) => (
+              <button key={s} onClick={() => setActiveSection(s)}
+                className={`flex-1 text-xs font-semibold py-2 rounded-lg transition-all capitalize ${activeSection === s ? "bg-white text-indigo-700 shadow-sm" : "text-slate-500 hover:text-slate-700"}`}>
+                {s}
+              </button>
+            ))}
+          </div>
+
+          {/* Overview */}
+          {activeSection === "overview" && (
+            <div className="grid gap-4 sm:grid-cols-2">
+              {/* Risk */}
+              <Card className="p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <AlertOctagon className="w-4 h-4 text-indigo-600" />
+                  <h4 className="font-semibold text-slate-800 text-sm">Preventive Risk</h4>
+                </div>
+                {passport.risk ? (
+                  <>
+                    <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-bold border capitalize ${riskColor}`}>
+                      {passport.risk.level} risk — {passport.risk.score}/100
+                    </div>
+                    {passport.risk.reasons?.length > 0 && (
+                      <ul className="mt-3 space-y-1">
+                        {passport.risk.reasons.map((r, i) => (
+                          <li key={i} className="text-xs text-slate-600 flex items-start gap-1.5">
+                            <AlertTriangle className="w-3 h-3 text-amber-500 mt-0.5 flex-shrink-0" />
+                            {r}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </>
+                ) : <p className="text-sm text-slate-400">No assessment recorded</p>}
+              </Card>
+
+              {/* Milestones */}
+              <Card className="p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <TrendingUp className="w-4 h-4 text-indigo-600" />
+                  <h4 className="font-semibold text-slate-800 text-sm">Development Milestones</h4>
+                </div>
+                {passport.milestones.length === 0
+                  ? <p className="text-sm text-slate-400">No milestones recorded</p>
+                  : <div className="space-y-2">
+                    {passport.milestones.slice(0, 4).map((m, i) => (
+                      <div key={i} className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-slate-700 truncate">{m.title}</span>
+                        <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusBadge(m.status)}`}>{m.status}</span>
+                      </div>
+                    ))}
+                  </div>}
+              </Card>
+
+              {/* Parent info */}
+              <Card className="p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <User className="w-4 h-4 text-indigo-600" />
+                  <h4 className="font-semibold text-slate-800 text-sm">Guardian Information</h4>
+                </div>
+                <div className="space-y-2 text-sm">
+                  <div className="flex justify-between"><span className="text-slate-500">Name</span><span className="font-medium text-slate-800">{child?.parent_name}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Phone</span><span className="font-medium text-slate-800">{child?.parent_phone || "—"}</span></div>
+                  <div className="flex justify-between"><span className="text-slate-500">Municipality</span><span className="font-medium text-slate-800">{child?.municipality || "—"}</span></div>
+                </div>
+              </Card>
+
+              {/* Upcoming appointments */}
+              <Card className="p-5">
+                <div className="flex items-center gap-2 mb-3">
+                  <CalendarDays className="w-4 h-4 text-indigo-600" />
+                  <h4 className="font-semibold text-slate-800 text-sm">Upcoming Appointments</h4>
+                </div>
+                {passport.appointments.filter((a) => a.status === "scheduled").length === 0
+                  ? <p className="text-sm text-slate-400">No upcoming appointments</p>
+                  : <div className="space-y-2">
+                    {passport.appointments.filter((a) => a.status === "scheduled").slice(0, 3).map((a, i) => (
+                      <div key={i} className="flex items-center justify-between gap-2">
+                        <span className="text-xs text-slate-700">{a.type}</span>
+                        <span className="text-[10px] text-slate-500">{new Date(a.scheduled_at).toLocaleDateString()}</span>
+                      </div>
+                    ))}
+                  </div>}
+              </Card>
+            </div>
+          )}
+
+          {/* Vaccinations */}
+          {activeSection === "vaccinations" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <h3 className="font-semibold text-slate-800">Vaccination History</h3>
+                <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <span className="w-2.5 h-2.5 rounded-full bg-emerald-400 inline-block" /> Completed
+                  <span className="w-2.5 h-2.5 rounded-full bg-red-400 inline-block ml-2" /> Missed
+                  <span className="w-2.5 h-2.5 rounded-full bg-blue-400 inline-block ml-2" /> Pending
+                </div>
+              </div>
+              {passport.vaccinations.length === 0
+                ? <Card className="p-6 text-center text-sm text-slate-400">No vaccination records</Card>
+                : passport.vaccinations.map((v, i) => (
+                  <div key={i} className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-4">
+                    <div className={`w-2 h-2 rounded-full flex-shrink-0 ${v.status === "completed" ? "bg-emerald-400" : v.status === "missed" ? "bg-red-400" : "bg-blue-400"}`} />
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-slate-800">{v.vaccine_name}</p>
+                      <p className="text-xs text-slate-500">
+                        Recommended: {v.recommended_date ? new Date(v.recommended_date).toLocaleDateString() : "—"}
+                        {v.completed_date && ` · Done: ${new Date(v.completed_date).toLocaleDateString()}`}
+                      </p>
+                    </div>
+                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-lg capitalize ${statusBadge(v.status)}`}>{v.status}</span>
+                  </div>
+                ))}
+            </div>
+          )}
+
+          {/* Visits */}
+          {activeSection === "visits" && (
+            <div className="space-y-3">
+              <h3 className="font-semibold text-slate-800">Home Visit Records</h3>
+              {passport.recentVisits.length === 0
+                ? <Card className="p-6 text-center text-sm text-slate-400">No visit records</Card>
+                : passport.recentVisits.map((v, i) => (
+                  <Card key={i} className="p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-semibold text-slate-800">Home Visit</p>
+                        <p className="text-xs text-slate-500 mt-0.5">
+                          {new Date(v.visited_at).toLocaleDateString()} · Nurse: {v.nurse_name}
+                        </p>
+                        {v.notes && <p className="text-xs text-slate-600 mt-2 bg-slate-50 rounded-lg px-3 py-2">{v.notes}</p>}
+                      </div>
+                      {v.nutrition_status && (
+                        <div className="flex items-center gap-1 text-xs text-slate-500">
+                          <Thermometer className="w-3 h-3" />
+                          {v.nutrition_status}
+                        </div>
+                      )}
+                    </div>
+                  </Card>
+                ))}
+            </div>
+          )}
+
+          {/* Appointments */}
+          {activeSection === "appointments" && (
+            <div className="space-y-3">
+              <h3 className="font-semibold text-slate-800">Appointment History</h3>
+              {passport.appointments.length === 0
+                ? <Card className="p-6 text-center text-sm text-slate-400">No appointments</Card>
+                : passport.appointments.map((a, i) => (
+                  <div key={i} className="bg-white border border-slate-200 rounded-xl px-4 py-3 flex items-center gap-4">
+                    <CalendarDays className="w-4 h-4 text-indigo-400 flex-shrink-0" />
+                    <div className="flex-1">
+                      <p className="text-sm font-semibold text-slate-800 capitalize">{a.type}</p>
+                      <p className="text-xs text-slate-500">{new Date(a.scheduled_at).toLocaleDateString()}</p>
+                    </div>
+                    <span className={`text-[10px] font-bold px-2.5 py-1 rounded-lg capitalize ${statusBadge(a.status)}`}>{a.status}</span>
+                  </div>
+                ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -3066,6 +3468,7 @@ export default function App() {
           {activePage === "landing" && <LandingPage setActivePage={setActivePage} user={user} />}
           {activePage === "login" && <AuthPage setActivePage={setActivePage} onLogin={setUser} />}
           {activePage === "parent" && <ParentDashboard user={user} onLogout={handleLogout} />}
+          {activePage === "passport" && <HealthPassport user={user} />}
           {activePage === "nurse" && <NurseDashboard user={user} />}
           {activePage === "visit" && <HomeVisitForm />}
           {activePage === "timeline" && <LiveChildTimeline />}
