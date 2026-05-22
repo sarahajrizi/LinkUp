@@ -32,9 +32,9 @@ async function fetchParentContext(userId) {
   );
 
   const riskRes = await query(
-    `SELECT DISTINCT ON (child_id) child_id, score, level, reasons, assessed_at
+    `SELECT DISTINCT ON (child_id) child_id, score, level, reasons, generated_at
      FROM risk_assessments WHERE child_id IN (${placeholders})
-     ORDER BY child_id, assessed_at DESC`,
+     ORDER BY child_id, generated_at DESC`,
     childIds
   );
 
@@ -62,21 +62,27 @@ async function fetchParentContext(userId) {
 
 function buildSystemPrompt(parentName, context) {
   const today = new Date().toISOString().split('T')[0];
+  const formatDate = (value, fallback = 'N/A') => {
+    if (!value) return fallback;
+    if (value instanceof Date) return value.toISOString().split('T')[0];
+    return String(value).split('T')[0];
+  };
+
   const childrenText = context.children.map((c) => {
-    const dob = c.date_of_birth ? new Date(c.date_of_birth).toISOString().split('T')[0] : 'unknown';
+    const dob = formatDate(c.date_of_birth, 'unknown');
     const ageMs = c.date_of_birth ? Date.now() - new Date(c.date_of_birth).getTime() : 0;
     const ageMonths = Math.floor(ageMs / (1000 * 60 * 60 * 24 * 30.44));
 
     const vaccines = c.vaccinations.map(
-      (v) => `  - ${v.vaccine_name}: status=${v.status}, recommended=${v.recommended_date?.split('T')[0] || 'N/A'}, scheduled=${v.scheduled_date?.split('T')[0] || 'N/A'}`
+      (v) => `  - ${v.vaccine_name}: status=${v.status}, recommended=${formatDate(v.recommended_date)}, scheduled=${formatDate(v.scheduled_date)}`
     ).join('\n') || '  (none recorded)';
 
     const appts = c.appointments.map(
-      (a) => `  - ${a.type} on ${new Date(a.scheduled_at).toISOString().split('T')[0]}: status=${a.status}, parent_response=${a.parent_response || 'none'}`
+      (a) => `  - ${a.type} on ${formatDate(a.scheduled_at)}: status=${a.status}, parent_response=${a.parent_response || 'none'}`
     ).join('\n') || '  (none recorded)';
 
     const miles = c.milestones.map(
-      (m) => `  - ${m.title}: expected=${m.expected_date?.split('T')[0] || 'N/A'}, achieved=${m.achieved_date?.split('T')[0] || 'not yet'}, status=${m.status}`
+      (m) => `  - ${m.title}: expected=${formatDate(m.expected_date)}, achieved=${formatDate(m.achieved_date, 'not yet')}, status=${m.status}`
     ).join('\n') || '  (none recorded)';
 
     const risk = c.risk
@@ -116,7 +122,7 @@ export async function chat(req, res) {
     throw error;
   }
 
-  if (!env.grokApiKey) {
+  if (!env.groqApiKey) {
     const error = new Error('AI chat is not configured on this server');
     error.status = 503;
     throw error;
@@ -129,7 +135,7 @@ export async function chat(req, res) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      Authorization: `Bearer ${env.grokApiKey}`,
+      Authorization: `Bearer ${env.groqApiKey}`,
     },
     body: JSON.stringify({
       model: 'llama-3.3-70b-versatile',

@@ -23,8 +23,8 @@ async function buildPassportData(childId) {
     query(`SELECT * FROM milestones WHERE child_id = $1 ORDER BY expected_date`, [childId]),
     query(
       `SELECT hv.*, u.name AS nurse_name FROM home_visits hv
-       JOIN users u ON u.id = hv.provider_id
-       WHERE hv.child_id = $1 ORDER BY hv.visited_at DESC LIMIT 10`,
+       LEFT JOIN users u ON u.id = hv.nurse_id
+       WHERE hv.child_id = $1 ORDER BY hv.completed_at DESC NULLS LAST LIMIT 10`,
       [childId],
     ),
     query(
@@ -32,7 +32,7 @@ async function buildPassportData(childId) {
       [childId],
     ),
     query(
-      `SELECT * FROM risk_assessments WHERE child_id = $1 ORDER BY assessed_at DESC LIMIT 1`,
+      `SELECT * FROM risk_assessments WHERE child_id = $1 ORDER BY generated_at DESC LIMIT 1`,
       [childId],
     ),
   ]);

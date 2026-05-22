@@ -1610,7 +1610,7 @@ type PassportData = {
   vaccinations: { vaccine_name: string; status: string; recommended_date: string; scheduled_date: string; completed_date?: string }[];
   checkups: { checkup_type: string; status: string; scheduled_date: string; completed_date?: string; notes?: string }[];
   milestones: { title: string; status: string; expected_date: string; achieved_date?: string }[];
-  recentVisits: { visited_at: string; nurse_name: string; notes?: string; nutrition_status?: string; risk_flags?: string }[];
+  recentVisits: { completed_at?: string; scheduled_at: string; nurse_name: string; nutrition_notes?: string; risk_notes?: string }[];
   appointments: { type: string; scheduled_at: string; status: string }[];
   risk: { score: number; level: string; reasons: string[] } | null;
 };
@@ -1946,9 +1946,9 @@ function HealthPassport({ user }: { user: SafeUser | null }) {
                       <div>
                         <p className="text-sm font-semibold text-slate-800">Home Visit</p>
                         <p className="text-xs text-slate-500 mt-0.5">
-                          {new Date(v.visited_at).toLocaleDateString()} · Nurse: {v.nurse_name}
+                          {new Date(v.completed_at || v.scheduled_at).toLocaleDateString()} · Nurse: {v.nurse_name}
                         </p>
-                        {v.notes && <p className="text-xs text-slate-600 mt-2 bg-slate-50 rounded-lg px-3 py-2">{v.notes}</p>}
+                        {v.nutrition_notes && <p className="text-xs text-slate-600 mt-2 bg-slate-50 rounded-lg px-3 py-2">{v.nutrition_notes}</p>}
                       </div>
                       {v.nutrition_status && (
                         <div className="flex items-center gap-1 text-xs text-slate-500">
