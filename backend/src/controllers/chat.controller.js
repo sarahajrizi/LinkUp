@@ -125,14 +125,14 @@ export async function chat(req, res) {
   const context = await fetchParentContext(req.user.id);
   const systemPrompt = buildSystemPrompt(req.user.name, context);
 
-  const grokResponse = await fetch('https://api.x.ai/v1/chat/completions', {
+  const groqResponse = await fetch('https://api.groq.com/openai/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${env.grokApiKey}`,
     },
     body: JSON.stringify({
-      model: 'grok-3-mini',
+      model: 'llama-3.3-70b-versatile',
       messages: [
         { role: 'system', content: systemPrompt },
         ...messages,
@@ -141,14 +141,14 @@ export async function chat(req, res) {
     }),
   });
 
-  if (!grokResponse.ok) {
-    const body = await grokResponse.text();
+  if (!groqResponse.ok) {
+    const body = await groqResponse.text();
     const error = new Error(`AI service error: ${body}`);
     error.status = 502;
     throw error;
   }
 
-  const data = await grokResponse.json();
+  const data = await groqResponse.json();
   const reply = data.choices?.[0]?.message?.content || '';
   res.json({ reply });
 }
