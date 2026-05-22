@@ -14,7 +14,8 @@ import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
   Tooltip, ResponsiveContainer, AreaChart, Area, PieChart, Pie, Cell
 } from "recharts";
-import { apiRequest, clearSession, getStoredToken, getStoredUser, login, registerAccount, storeSession, type SafeUser } from "./lib/api";
+import { io, type Socket } from "socket.io-client";
+import { apiRequest, clearSession, getStoredToken, getStoredUser, login, registerAccount, SOCKET_URL, storeSession, type SafeUser } from "./lib/api";
 
 type Page =
   | "landing" | "login" | "parent" | "nurse"
@@ -1705,172 +1706,354 @@ function NurseDashboard({ user }: { user: SafeUser | null }) {
 // ─── Home Visit Form ──────────────────────────────────────────────────────────
 
 function HomeVisitForm() {
-  const [activeSection, setActiveSection] = useState("nutrition");
-  const [isRecording, setIsRecording] = useState(false);
-  const sections = ["nutrition", "vaccination", "development", "environment", "risk"];
-
+  const [activeSection, setActiveSection] = useState("overview");
+  const [visits, setVisits] = useState<any[]>([]);
+  const [children, setChildren] = useState<any[]>([]);
+  const [selectedVisitId, setSelectedVisitId] = useState("");
+  const [notice, setNotice] = useState("");
+  const [visitDraft, setVisitDraft] = useState({
+    childId: "",
+    scheduledAt: "",
+    visitType: "routine",
+    location: "",
+  });
+  const [form, setForm] = useState({
+    temperature: "",
+    weightKg: "",
+    heightCm: "",
+    symptoms: "",
+    nutritionNotes: "",
+    vaccinationNotes: "",
+    developmentNotes: "",
+    environmentNotes: "",
+    riskNotes: "",
+    riskLevel: "low",
+    nextVisitAt: "",
+    recommendedActions: [] as string[],
+    followUpType: "vaccination",
+    followUpAt: "",
+    followUpLocation: "",
+    followUpNotes: "",
+  });
+  const sections = ["overview", "health", "vaccination", "development", "environment", "actions", "submit"];
   const sectionLabels: Record<string, string> = {
-    nutrition: "Nutrition", vaccination: "Vaccination", development: "Development",
-    environment: "Home Environment", risk: "Risk Notes",
+    overview: "Overview",
+    health: "Health",
+    vaccination: "Vaccines",
+    development: "Development",
+    environment: "Home",
+    actions: "Actions",
+    submit: "Submit",
+  };
+
+  const loadVisits = async () => {
+    const [data, childData] = await Promise.all([
+      apiRequest<{ visits: any[] }>("/visits"),
+      apiRequest<{ children: any[] }>("/children"),
+    ]);
+    setVisits(data.visits);
+    setChildren(childData.children);
+    setVisitDraft((draft) => ({
+      ...draft,
+      childId: draft.childId || childData.children[0]?.id || "",
+    }));
+    setSelectedVisitId((current) => current || data.visits.find((visit) => visit.status !== "completed")?.id || data.visits[0]?.id || "");
+  };
+
+  useEffect(() => {
+    loadVisits().catch(() => setVisits([]));
+  }, []);
+
+  const visit = visits.find((item) => item.id === selectedVisitId);
+  const selectedDraftChild = children.find((child) => child.id === visitDraft.childId);
+  const setField = (key: keyof typeof form, value: string) => setForm((current) => ({ ...current, [key]: value }));
+  const toggleAction = (action: string) => {
+    setForm((current) => ({
+      ...current,
+      recommendedActions: current.recommendedActions.includes(action)
+        ? current.recommendedActions.filter((item) => item !== action)
+        : [...current.recommendedActions, action],
+    }));
+  };
+
+  const saveVisit = async (status: "in_progress" | "completed") => {
+    if (!visit) return;
+    setNotice("");
+    const body: any = {
+      status,
+      completedAt: status === "completed" ? new Date().toISOString() : undefined,
+      temperature: form.temperature ? Number(form.temperature) : undefined,
+      weightKg: form.weightKg ? Number(form.weightKg) : undefined,
+      heightCm: form.heightCm ? Number(form.heightCm) : undefined,
+      symptoms: form.symptoms || undefined,
+      nutritionNotes: form.nutritionNotes || undefined,
+      vaccinationNotes: form.vaccinationNotes || undefined,
+      developmentNotes: form.developmentNotes || undefined,
+      environmentNotes: form.environmentNotes || undefined,
+      riskNotes: form.riskNotes || undefined,
+      riskLevel: form.riskLevel,
+      nextVisitAt: form.nextVisitAt || undefined,
+      recommendedActions: form.recommendedActions,
+      followUpAppointment: form.followUpAt ? {
+        type: form.followUpType,
+        scheduledAt: form.followUpAt,
+        location: form.followUpLocation,
+        notes: form.followUpNotes,
+      } : undefined,
+    };
+    await apiRequest(`/visits/${visit.id}`, { method: "PATCH", body });
+    setNotice(status === "completed" ? "Visit completed. Parent was notified." : "Draft saved.");
+    await loadVisits();
+  };
+
+  const createVisit = async (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    setNotice("");
+    const data = await apiRequest<{ visit: any }>("/visits", {
+      method: "POST",
+      body: {
+        childId: visitDraft.childId,
+        scheduledAt: visitDraft.scheduledAt || new Date().toISOString(),
+        visitType: visitDraft.visitType,
+        location: visitDraft.location,
+      },
+    });
+    setSelectedVisitId(data.visit.id);
+    setNotice("Visit created. Parent was notified.");
+    await loadVisits();
   };
 
   return (
-    <div className="p-6 max-w-2xl mx-auto">
-      {/* Family header */}
-      <Card className="p-5 mb-5">
-        <div className="flex items-center gap-4">
-          <div className="w-12 h-12 rounded-xl bg-indigo-50 flex items-center justify-center text-lg font-black text-indigo-600">GH</div>
-          <div className="flex-1">
-            <h2 className="font-bold text-slate-900">Gashi Family</h2>
-            <p className="text-sm text-slate-500">Besnik Gashi · 2 months old · Male</p>
-            <p className="text-xs text-slate-400 mt-0.5">Rruga Nëna Terezë 22, Pristina</p>
+    <div className="p-6 max-w-5xl mx-auto">
+      <div className="grid lg:grid-cols-3 gap-5">
+        <Card className="lg:col-span-1 overflow-hidden">
+          <div className="p-4 border-b border-slate-100">
+            <h3 className="text-sm font-bold text-slate-800">Assigned Visits</h3>
+            <p className="text-xs text-slate-500 mt-1">Select a scheduled visit to complete.</p>
           </div>
-          <div className="text-right">
-            <div className="flex items-center gap-1.5 justify-end">
-              <div className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-              <span className="text-xs font-semibold text-amber-600">Medium Risk</span>
+          <form onSubmit={createVisit} className="p-4 border-b border-slate-100 bg-slate-50 space-y-2">
+            <p className="text-xs font-bold text-slate-700">Create home visit</p>
+            <select
+              value={visitDraft.childId}
+              onChange={(event) => setVisitDraft((draft) => ({ ...draft, childId: event.target.value }))}
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white"
+              disabled={children.length === 0}
+            >
+              {children.length === 0 && <option value="">No assigned children</option>}
+              {children.map((child) => (
+                <option key={child.id} value={child.id}>{child.full_name}{child.parent_name ? ` - ${child.parent_name}` : ""}</option>
+              ))}
+            </select>
+            <div className="grid grid-cols-2 gap-2">
+              <select
+                value={visitDraft.visitType}
+                onChange={(event) => setVisitDraft((draft) => ({ ...draft, visitType: event.target.value }))}
+                className="px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white"
+              >
+                <option value="routine">Routine</option>
+                <option value="follow-up">Follow-up</option>
+                <option value="vaccination follow-up">Vaccination</option>
+                <option value="missed-care follow-up">Missed care</option>
+              </select>
+              <input
+                type="datetime-local"
+                value={visitDraft.scheduledAt}
+                onChange={(event) => setVisitDraft((draft) => ({ ...draft, scheduledAt: event.target.value }))}
+                className="px-3 py-2 border border-slate-200 rounded-lg text-xs"
+              />
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">Visit #3</p>
-          </div>
-        </div>
-      </Card>
-
-      {/* Sync status */}
-      <div className="flex items-center gap-2 mb-5 px-3 py-2.5 bg-emerald-50 rounded-lg border border-emerald-100">
-        <Wifi className="w-3.5 h-3.5 text-emerald-600" />
-        <span className="text-xs font-semibold text-emerald-700">Online — form will auto-sync on save</span>
-        <button className="ml-auto text-[10px] text-emerald-600 font-semibold flex items-center gap-1">
-          <RefreshCw className="w-3 h-3" /> Sync now
-        </button>
-      </div>
-
-      {/* Section tabs */}
-      <div className="flex gap-1 mb-5 overflow-x-auto">
-        {sections.map((s) => (
-          <button
-            key={s}
-            onClick={() => setActiveSection(s)}
-            className={`flex-shrink-0 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all ${activeSection === s ? "bg-indigo-600 text-white" : "bg-white text-slate-500 border border-slate-100 hover:border-indigo-200"}`}
-          >
-            {sectionLabels[s]}
-          </button>
-        ))}
-      </div>
-
-      {/* Form */}
-      <Card className="p-5 mb-4">
-        {activeSection === "nutrition" && (
-          <div className="space-y-4">
-            <h3 className="text-sm font-bold text-slate-800 mb-4">Nutrition Assessment</h3>
-            <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Breastfeeding status</label>
-              <div className="flex gap-2">
-                {["Exclusive", "Mixed", "Formula only", "Weaned"].map((opt) => (
-                  <button key={opt} className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 transition-colors">
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Current weight (kg)</label>
-              <input type="number" placeholder="e.g. 5.2" className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Iron supplementation</label>
-              <div className="flex gap-2">
-                {["Yes, as prescribed", "Yes, OTC", "No", "Unknown"].map((opt) => (
-                  <button key={opt} className="px-3 py-1.5 rounded-lg border border-slate-200 text-xs text-slate-600 hover:border-indigo-300 hover:bg-indigo-50 transition-colors">
-                    {opt}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Nutrition notes</label>
-              <div className="relative">
-                <textarea
-                  rows={3}
-                  placeholder="Observations about feeding patterns, appetite, and caregiver practices..."
-                  className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 resize-none pr-10"
-                />
-                <button
-                  onClick={() => setIsRecording(!isRecording)}
-                  className={`absolute right-2.5 bottom-2.5 w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${isRecording ? "bg-red-500 text-white" : "bg-slate-100 text-slate-400 hover:bg-indigo-100 hover:text-indigo-600"}`}
-                >
-                  <Mic className="w-3.5 h-3.5" />
-                </button>
-              </div>
-              {isRecording && (
-                <div className="flex items-center gap-2 mt-1.5 text-red-600 text-xs font-semibold">
-                  <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-                  Recording… tap mic to stop
+            <input
+              value={visitDraft.location}
+              onChange={(event) => setVisitDraft((draft) => ({ ...draft, location: event.target.value }))}
+              placeholder="Location"
+              className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs"
+            />
+            <button
+              type="submit"
+              disabled={!visitDraft.childId}
+              className="w-full bg-indigo-600 text-white py-2 rounded-lg text-xs font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Create and notify parent
+            </button>
+            {children.length === 0 && (
+              <p className="text-[11px] text-amber-600 leading-relaxed">
+                Admin needs to assign a parent/child to this nurse before visits can be created.
+              </p>
+            )}
+          </form>
+          <div className="divide-y divide-slate-50 max-h-[560px] overflow-y-auto">
+            {visits.length === 0 && <p className="p-4 text-sm text-slate-500">No visits assigned yet.</p>}
+            {visits.map((item) => (
+              <button
+                key={item.id}
+                onClick={() => setSelectedVisitId(item.id)}
+                className={`w-full text-left p-4 hover:bg-slate-50 transition-colors ${selectedVisitId === item.id ? "bg-indigo-50" : ""}`}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-sm font-semibold text-slate-800">{item.child_name}</p>
+                    <p className="text-xs text-slate-500">{formatDisplayDate(item.scheduled_at)} - {item.visit_type}</p>
+                    <p className="text-xs text-slate-400 mt-1">{item.location || "No location set"}</p>
+                  </div>
+                  <Badge variant={item.status === "completed" ? "success" : item.status === "missed" ? "danger" : "info"}>{item.status}</Badge>
                 </div>
-              )}
-            </div>
-          </div>
-        )}
-
-        {activeSection === "vaccination" && (
-          <div className="space-y-4">
-            <h3 className="text-sm font-bold text-slate-800 mb-4">Vaccination Status</h3>
-            {[
-              { name: "BCG", due: "At birth", status: "completed" },
-              { name: "Hepatitis B (1st dose)", due: "At birth", status: "completed" },
-              { name: "DTP-Hib-IPV (1st dose)", due: "2 months", status: "pending" },
-              { name: "Pneumococcal (1st dose)", due: "2 months", status: "pending" },
-            ].map((v) => (
-              <div key={v.name} className="flex items-center gap-3 p-3 rounded-lg bg-slate-50 border border-slate-100">
-                <div className={`w-5 h-5 rounded-full flex items-center justify-center flex-shrink-0 ${v.status === "completed" ? "bg-emerald-100" : "bg-slate-200"}`}>
-                  {v.status === "completed" ? <Check className="w-3 h-3 text-emerald-600" /> : <Clock className="w-3 h-3 text-slate-400" />}
-                </div>
-                <div className="flex-1">
-                  <p className="text-sm font-semibold text-slate-800">{v.name}</p>
-                  <p className="text-xs text-slate-500">Due: {v.due}</p>
-                </div>
-                <Badge variant={v.status === "completed" ? "success" : "muted"}>{v.status}</Badge>
-              </div>
+              </button>
             ))}
           </div>
-        )}
+        </Card>
 
-        {(activeSection === "development" || activeSection === "environment" || activeSection === "risk") && (
-          <div>
-            <h3 className="text-sm font-bold text-slate-800 mb-4">{sectionLabels[activeSection]}</h3>
-            <div className="space-y-4">
+        <div className="lg:col-span-2">
+          <Card className="p-5 mb-5">
+            <div className="flex items-start justify-between gap-4">
               <div>
-                <label className="text-xs font-semibold text-slate-600 mb-1.5 block">General observations</label>
-                <textarea rows={4} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 resize-none" placeholder="Enter your observations..." />
+                <h2 className="font-bold text-slate-900">{visit?.child_name || "Home Visit Form"}</h2>
+                <p className="text-sm text-slate-500">{visit ? `${childAgeLabel(visit.date_of_birth)} - ${visit.visit_type}` : "Choose a visit from the list"}</p>
+                <p className="text-xs text-slate-400 mt-0.5">{visit?.location || "Location not set"}</p>
+                {visit && (
+                  <p className="text-xs text-indigo-600 font-semibold mt-1">
+                    Parent to notify: {visit.parent_name || "Linked parent"}{visit.parent_email ? ` - ${visit.parent_email}` : ""}
+                  </p>
+                )}
+                {!visit && selectedDraftChild && (
+                  <p className="text-xs text-indigo-600 font-semibold mt-1">
+                    New visit will notify: {selectedDraftChild.parent_name || "linked parent"}
+                  </p>
+                )}
               </div>
-              <div>
-                <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Risk level assessed</label>
-                <div className="flex gap-2">
-                  {["Low", "Medium", "High"].map((r) => (
-                    <button key={r} className={`flex-1 py-2 rounded-lg border text-xs font-bold transition-colors ${r === "Low" ? "border-emerald-200 text-emerald-700 hover:bg-emerald-50" : r === "Medium" ? "border-amber-200 text-amber-700 hover:bg-amber-50" : "border-red-200 text-red-700 hover:bg-red-50"}`}>
-                      {r}
-                    </button>
-                  ))}
-                </div>
+              <div className="text-right">
+                <Badge variant={form.riskLevel === "high" || form.riskLevel === "critical" ? "danger" : form.riskLevel === "moderate" ? "warning" : "success"}>{form.riskLevel} risk</Badge>
+                <p className="text-xs text-slate-400 mt-2">{visit ? formatDisplayDate(visit.scheduled_at) : ""}</p>
               </div>
             </div>
-          </div>
-        )}
-      </Card>
+          </Card>
 
-      {/* Actions */}
-      <div className="flex gap-3">
-        <button className="flex-1 py-3 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 transition-colors">
-          Save Draft
-        </button>
-        <button className="flex-1 py-3 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 transition-colors">
-          Submit Visit Record
-        </button>
+          <div className="flex gap-1 mb-5 overflow-x-auto">
+            {sections.map((section) => (
+              <button
+                key={section}
+                onClick={() => setActiveSection(section)}
+                className={`flex-shrink-0 px-3.5 py-2 rounded-lg text-xs font-semibold transition-all ${activeSection === section ? "bg-indigo-600 text-white" : "bg-white text-slate-500 border border-slate-100 hover:border-indigo-200"}`}
+              >
+                {sectionLabels[section]}
+              </button>
+            ))}
+          </div>
+
+          <Card className="p-5 mb-4">
+            {activeSection === "overview" && (
+              <div className="grid sm:grid-cols-3 gap-3">
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Temperature</label>
+                  <input value={form.temperature} onChange={(event) => setField("temperature", event.target.value)} type="number" step="0.1" placeholder="36.8" className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Weight kg</label>
+                  <input value={form.weightKg} onChange={(event) => setField("weightKg", event.target.value)} type="number" step="0.1" placeholder="12.4" className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm" />
+                </div>
+                <div>
+                  <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Height cm</label>
+                  <input value={form.heightCm} onChange={(event) => setField("heightCm", event.target.value)} type="number" step="0.1" placeholder="86" className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm" />
+                </div>
+                <div className="sm:col-span-3">
+                  <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Symptoms / urgent concerns</label>
+                  <textarea value={form.symptoms} onChange={(event) => setField("symptoms", event.target.value)} rows={3} placeholder="Fever, cough, appetite, sleep, medication..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+                </div>
+              </div>
+            )}
+
+            {activeSection === "health" && (
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 mb-3">Nutrition and General Health</h3>
+                <textarea value={form.nutritionNotes} onChange={(event) => setField("nutritionNotes", event.target.value)} rows={6} placeholder="Feeding, appetite, sleep, parent concerns, medications..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+            )}
+
+            {activeSection === "vaccination" && (
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 mb-3">Vaccination Review</h3>
+                <textarea value={form.vaccinationNotes} onChange={(event) => setField("vaccinationNotes", event.target.value)} rows={6} placeholder="Completed vaccines, missed vaccines, refusal/delay reason, schedule needed..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+            )}
+
+            {activeSection === "development" && (
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 mb-3">Development Milestones</h3>
+                <textarea value={form.developmentNotes} onChange={(event) => setField("developmentNotes", event.target.value)} rows={6} placeholder="Motor, language, social interaction, feeding independence, concerns..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+            )}
+
+            {activeSection === "environment" && (
+              <div>
+                <h3 className="text-sm font-bold text-slate-800 mb-3">Home Environment</h3>
+                <textarea value={form.environmentNotes} onChange={(event) => setField("environmentNotes", event.target.value)} rows={6} placeholder="Hygiene, heating, safety risks, smoke exposure, transport access..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+            )}
+
+            {activeSection === "actions" && (
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-sm font-bold text-slate-800 mb-3">Recommended Actions</h3>
+                  <div className="grid sm:grid-cols-2 gap-2">
+                    {["Schedule vaccination", "Schedule check-up", "Send parent guidance", "Escalate to doctor", "Create follow-up visit", "Mark missed care resolved"].map((action) => (
+                      <label key={action} className="flex items-center gap-2 p-3 rounded-lg border border-slate-100 bg-slate-50 text-sm text-slate-700">
+                        <input type="checkbox" checked={form.recommendedActions.includes(action)} onChange={() => toggleAction(action)} />
+                        {action}
+                      </label>
+                    ))}
+                  </div>
+                </div>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Risk level</label>
+                    <select value={form.riskLevel} onChange={(event) => setField("riskLevel", event.target.value)} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white">
+                      <option value="low">Low</option>
+                      <option value="moderate">Moderate</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="text-xs font-semibold text-slate-600 mb-1.5 block">Next home visit</label>
+                    <input type="datetime-local" value={form.nextVisitAt} onChange={(event) => setField("nextVisitAt", event.target.value)} className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm" />
+                  </div>
+                </div>
+                <textarea value={form.riskNotes} onChange={(event) => setField("riskNotes", event.target.value)} rows={3} placeholder="Risk notes and escalation reason..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+            )}
+
+            {activeSection === "submit" && (
+              <div className="space-y-4">
+                <h3 className="text-sm font-bold text-slate-800">Create Follow-up Appointment</h3>
+                <div className="grid sm:grid-cols-2 gap-3">
+                  <select value={form.followUpType} onChange={(event) => setField("followUpType", event.target.value)} className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm bg-white">
+                    <option value="vaccination">Vaccination</option>
+                    <option value="checkup">Check-up</option>
+                    <option value="home_visit">Home visit</option>
+                    <option value="dental">Dental</option>
+                    <option value="other">Other</option>
+                  </select>
+                  <input type="datetime-local" value={form.followUpAt} onChange={(event) => setField("followUpAt", event.target.value)} className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm" />
+                </div>
+                <input value={form.followUpLocation} onChange={(event) => setField("followUpLocation", event.target.value)} placeholder="Location" className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm" />
+                <textarea value={form.followUpNotes} onChange={(event) => setField("followUpNotes", event.target.value)} rows={3} placeholder="Notes for parent..." className="w-full px-3 py-2.5 border border-slate-200 rounded-lg text-sm resize-none" />
+              </div>
+            )}
+          </Card>
+
+          <div className="flex gap-3">
+            <button onClick={() => saveVisit("in_progress")} disabled={!visit} className="flex-1 py-3 border border-slate-200 rounded-lg text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50">
+              Save Draft
+            </button>
+            <button onClick={() => saveVisit("completed")} disabled={!visit} className="flex-1 py-3 bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700 disabled:opacity-50">
+              Complete Visit
+            </button>
+          </div>
+          {notice && <p className="text-xs text-emerald-600 font-semibold mt-3">{notice}</p>}
+        </div>
       </div>
     </div>
   );
 }
-
-// ─── Child Timeline ───────────────────────────────────────────────────────────
 
 function ChildTimeline() {
   return <LiveChildTimeline />;
@@ -1882,7 +2065,23 @@ function LiveChildTimeline() {
   const [selectedChildId, setSelectedChildId] = useState("");
   const [events, setEvents] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
+  const [recordNotice, setRecordNotice] = useState("");
+  const [recordDraft, setRecordDraft] = useState({
+    type: "vaccination",
+    title: "",
+    date: new Date().toISOString().slice(0, 10),
+    status: "completed",
+    notes: "",
+  });
   const filters = ["all", "vaccinations", "check-ups", "milestones", "missed"];
+
+  const loadTimeline = async (childId: string) => {
+    setLoading(true);
+    apiRequest<{ timeline: any[] }>(`/dashboard/children/${childId}/timeline`)
+      .then((data) => setEvents(data.timeline))
+      .catch(() => setEvents([]))
+      .finally(() => setLoading(false));
+  };
 
   useEffect(() => {
     apiRequest<{ children: any[] }>("/children")
@@ -1899,11 +2098,7 @@ function LiveChildTimeline() {
       setLoading(false);
       return;
     }
-    setLoading(true);
-    apiRequest<{ timeline: any[] }>(`/dashboard/children/${selectedChildId}/timeline`)
-      .then((data) => setEvents(data.timeline))
-      .catch(() => setEvents([]))
-      .finally(() => setLoading(false));
+    loadTimeline(selectedChildId);
   }, [selectedChildId]);
 
   const child = children.find((item) => item.id === selectedChildId);
@@ -1912,7 +2107,7 @@ function LiveChildTimeline() {
     label: event.title || event.vaccine_name || event.checkup_type || event.name || "Health event",
     type: event.type === "checkup" ? "check-ups" : event.type === "vaccination" ? "vaccinations" : event.type || "milestones",
     status: event.status || "completed",
-    detail: event.notes || event.description || event.provider_name || "Recorded in SAFE",
+    detail: event.notes || event.description || event.provider_name || event.data?.notes || "Recorded in SAFE",
   }));
   const filtered = filter === "all"
     ? timeline
@@ -1925,10 +2120,57 @@ function LiveChildTimeline() {
     overdue: "bg-red-500 border-red-200",
     pending: "bg-blue-400 border-blue-200",
     scheduled: "bg-blue-400 border-blue-200",
+    confirmed: "bg-blue-400 border-blue-200",
+    in_progress: "bg-amber-400 border-amber-200",
+    cancelled: "bg-slate-400 border-slate-200",
+  };
+
+  const addRecord = async (event: React.SyntheticEvent) => {
+    event.preventDefault();
+    if (!selectedChildId) return;
+    setRecordNotice("");
+    const status = recordDraft.status;
+    if (recordDraft.type === "vaccination") {
+      await apiRequest(`/children/${selectedChildId}/vaccinations`, {
+        method: "POST",
+        body: {
+          vaccineName: recordDraft.title,
+          recommendedDate: recordDraft.date,
+          scheduledDate: recordDraft.date,
+          completedDate: status === "completed" ? recordDraft.date : undefined,
+          status,
+        },
+      });
+    } else if (recordDraft.type === "checkup") {
+      await apiRequest(`/children/${selectedChildId}/checkups`, {
+        method: "POST",
+        body: {
+          checkupType: recordDraft.title,
+          scheduledDate: recordDraft.date,
+          completedDate: status === "completed" ? recordDraft.date : undefined,
+          notes: recordDraft.notes,
+          status,
+        },
+      });
+    } else {
+      await apiRequest(`/children/${selectedChildId}/milestones`, {
+        method: "POST",
+        body: {
+          title: recordDraft.title,
+          description: recordDraft.notes,
+          expectedDate: recordDraft.date,
+          achievedDate: status === "completed" ? recordDraft.date : undefined,
+          status,
+        },
+      });
+    }
+    setRecordNotice("Record added to timeline.");
+    setRecordDraft((draft) => ({ ...draft, title: "", notes: "" }));
+    await loadTimeline(selectedChildId);
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto">
+    <div className="p-6 max-w-5xl mx-auto">
       <div className="flex items-start justify-between gap-4 mb-6">
         <div>
           <h1 className="text-xl font-bold text-slate-900">{child?.full_name || "Child Health Timeline"}</h1>
@@ -1948,6 +2190,62 @@ function LiveChildTimeline() {
           </select>
         )}
       </div>
+
+      {children.length > 0 && (
+        <Card className="p-4 mb-5">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <div>
+              <h3 className="text-sm font-bold text-slate-800">Add Health Record</h3>
+              <p className="text-xs text-slate-500">Record completed vaccines, check-ups, and milestones for the selected child.</p>
+            </div>
+            {recordNotice && <span className="text-xs font-semibold text-emerald-600">{recordNotice}</span>}
+          </div>
+          <form onSubmit={addRecord} className="grid md:grid-cols-6 gap-2">
+            <select
+              value={recordDraft.type}
+              onChange={(event) => setRecordDraft((draft) => ({ ...draft, type: event.target.value }))}
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+            >
+              <option value="vaccination">Vaccination</option>
+              <option value="checkup">Check-up</option>
+              <option value="milestone">Milestone</option>
+            </select>
+            <input
+              value={recordDraft.title}
+              onChange={(event) => setRecordDraft((draft) => ({ ...draft, title: event.target.value }))}
+              placeholder={recordDraft.type === "vaccination" ? "MMR vaccine" : recordDraft.type === "checkup" ? "Dental check-up" : "First words"}
+              className="md:col-span-2 px-3 py-2 border border-slate-200 rounded-lg text-sm"
+              required
+            />
+            <input
+              type="date"
+              value={recordDraft.date}
+              onChange={(event) => setRecordDraft((draft) => ({ ...draft, date: event.target.value }))}
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm"
+              required
+            />
+            <select
+              value={recordDraft.status}
+              onChange={(event) => setRecordDraft((draft) => ({ ...draft, status: event.target.value }))}
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+            >
+              <option value="completed">Completed</option>
+              <option value="pending">Pending</option>
+              <option value="missed">Missed</option>
+              <option value="delayed">Delayed</option>
+            </select>
+            <button className="bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700">
+              Add
+            </button>
+            <input
+              value={recordDraft.notes}
+              onChange={(event) => setRecordDraft((draft) => ({ ...draft, notes: event.target.value }))}
+              placeholder="Optional notes"
+              className="md:col-span-6 px-3 py-2 border border-slate-200 rounded-lg text-sm"
+            />
+          </form>
+        </Card>
+      )}
 
       <div className="flex gap-2 mb-6 flex-wrap">
         {filters.map((item) => (
@@ -2524,61 +2822,97 @@ function MessagingModule({ user }: { user: SafeUser | null }) {
   const [message, setMessage] = useState("");
   const [apiMessages, setApiMessages] = useState<any[]>([]);
   const [careTeam, setCareTeam] = useState<any[]>([]);
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [socketStatus, setSocketStatus] = useState<"connecting" | "online" | "offline">("connecting");
+  const [chatError, setChatError] = useState("");
 
-  const conversations = [
-    { name: "SAFE Care Team", avatar: "SC", lastMessage: "No messages yet.", time: "Live", unread: 0, type: "system" },
-  ];
-
-  const messages = [
-    { sender: "system", text: "Start a secure conversation with your care team.", time: "Live" },
-  ];
+  const loadChat = async () => {
+    const [messagesData, usersData] = await Promise.all([
+      apiRequest<{ messages: any[] }>("/messages"),
+      apiRequest<{ users: any[] }>("/users/care-team"),
+    ]);
+    setApiMessages(messagesData.messages);
+    setCareTeam(usersData.users.filter((item) => item.id !== user?.id));
+  };
 
   useEffect(() => {
-    apiRequest<{ messages: any[] }>("/messages")
-      .then((data) => setApiMessages(data.messages))
-      .catch(() => setApiMessages([]));
-    apiRequest<{ users: any[] }>("/users/care-team")
-      .then((data) => setCareTeam(data.users))
-      .catch(() => setCareTeam([]));
-  }, []);
+    if (!user) return;
+    loadChat().catch(() => undefined);
+  }, [user?.id]);
 
-  const visibleMessages = apiMessages.length > 0
-    ? apiMessages.map((item) => ({
-      sender: item.sender_id === user?.id ? "parent" : "nurse",
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token || !user) return;
+    const nextSocket = io(SOCKET_URL, { auth: { token }, transports: ["websocket", "polling"] });
+    setSocket(nextSocket);
+    setSocketStatus("connecting");
+
+    nextSocket.on("connect", () => setSocketStatus("online"));
+    nextSocket.on("disconnect", () => setSocketStatus("offline"));
+    nextSocket.on("connect_error", () => setSocketStatus("offline"));
+    nextSocket.on("message:new", (incoming) => {
+      setApiMessages((current) => current.some((item) => item.id === incoming.id) ? current : [...current, incoming]);
+    });
+
+    return () => {
+      nextSocket.disconnect();
+      setSocket(null);
+    };
+  }, [user?.id]);
+
+  const fallbackContact = { id: "", name: "SAFE Care Team", role: "system", email: "", avatar: "SC" };
+  const contacts = careTeam.length > 0 ? careTeam : [fallbackContact];
+  const activeContact = contacts[Math.min(activeConv, contacts.length - 1)] || fallbackContact;
+  const messagesForContact = apiMessages.filter((item) => (
+    item.sender_id === activeContact.id || item.recipient_id === activeContact.id
+  ));
+  const visibleMessages = messagesForContact.length > 0
+    ? messagesForContact.map((item) => ({
+      id: item.id,
+      sender: item.sender_id === user?.id ? "me" : "other",
       text: item.body,
       time: new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     }))
-    : messages;
-  const visibleConversations = apiMessages.length > 0
-    ? Array.from(new Map(apiMessages.map((item) => {
-      const other = item.sender_id === user?.id ? item.recipient : item.sender;
-      const name = other?.name || "SAFE Care Team";
-      return [name, {
-        name,
-        avatar: initialsFor(name),
-        lastMessage: item.body,
-        time: new Date(item.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
-        unread: 0,
-        type: other?.role || "system",
-      }];
-    })).values())
-    : conversations;
+    : [{ id: "empty", sender: "system", text: activeContact.id ? "Start a secure real-time conversation." : "No assigned contacts yet.", time: "Live" }];
+  const visibleConversations = contacts.map((contact) => {
+    const last = [...apiMessages].reverse().find((item) => item.sender_id === contact.id || item.recipient_id === contact.id);
+    return {
+      ...contact,
+      avatar: initialsFor(contact.name),
+      lastMessage: last?.body || (contact.role === "admin" ? "Contact admin support" : "Start conversation"),
+      time: last ? new Date(last.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "Live",
+      unread: apiMessages.filter((item) => item.sender_id === contact.id && item.recipient_id === user?.id && !item.read_at).length,
+    };
+  });
 
   const sendBackendMessage = async () => {
-    const recipient = careTeam.find((item) => item.id !== user?.id);
-    if (!recipient || !message.trim()) return;
-    await apiRequest("/messages", {
-      method: "POST",
-      body: { recipientId: recipient.id, body: message },
-    });
+    const body = message.trim();
+    if (!activeContact.id || !body) return;
+    setChatError("");
     setMessage("");
-    const data = await apiRequest<{ messages: any[] }>("/messages");
-    setApiMessages(data.messages);
+    if (socket?.connected) {
+      socket.emit("message:send", { recipientId: activeContact.id, body }, (response: any) => {
+        if (!response?.ok) {
+          setChatError(response?.error || "Could not send message");
+          setMessage(body);
+        }
+      });
+      return;
+    }
+    try {
+      const data = await apiRequest<{ message: any }>("/messages", {
+        method: "POST",
+        body: { recipientId: activeContact.id, body },
+      });
+      setApiMessages((current) => current.some((item) => item.id === data.message.id) ? current : [...current, data.message]);
+    } catch (error) {
+      setChatError(error instanceof Error ? error.message : "Could not send message");
+      setMessage(body);
+    }
   };
 
   return (
     <div className="h-full flex overflow-hidden" style={{ maxHeight: "calc(100vh - 56px)" }}>
-      {/* Conversation list */}
       <div className="w-72 flex-shrink-0 border-r border-slate-100 bg-white flex flex-col">
         <div className="p-4 border-b border-slate-100">
           <div className="relative">
@@ -2589,7 +2923,7 @@ function MessagingModule({ user }: { user: SafeUser | null }) {
         <div className="flex-1 overflow-y-auto divide-y divide-slate-50">
           {visibleConversations.map((c, i) => (
             <button
-              key={i}
+              key={c.id || i}
               onClick={() => setActiveConv(i)}
               className={`w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-slate-50 transition-colors ${activeConv === i ? "bg-indigo-50" : ""}`}
             >
@@ -2613,61 +2947,65 @@ function MessagingModule({ user }: { user: SafeUser | null }) {
         </div>
       </div>
 
-      {/* Chat view */}
       <div className="flex-1 flex flex-col bg-slate-50">
-        {/* Chat header */}
         <div className="bg-white border-b border-slate-100 px-5 py-3.5 flex items-center gap-3">
           <div className="w-9 h-9 rounded-full bg-indigo-100 flex items-center justify-center text-xs font-bold text-indigo-700">
-            {visibleConversations[Math.min(activeConv, visibleConversations.length - 1)].avatar}
+            {initialsFor(activeContact.name)}
           </div>
           <div>
-            <p className="text-sm font-semibold text-slate-900">{visibleConversations[Math.min(activeConv, visibleConversations.length - 1)].name}</p>
-            <p className="text-xs text-emerald-600 font-medium">● Online</p>
+            <p className="text-sm font-semibold text-slate-900">{activeContact.name}</p>
+            <p className={`text-xs font-medium ${socketStatus === "online" ? "text-emerald-600" : "text-amber-600"}`}>
+              {socketStatus === "online" ? "Online - real-time chat" : socketStatus === "connecting" ? "Connecting..." : "Offline - REST fallback"}
+            </p>
           </div>
           <div className="ml-auto flex items-center gap-2">
-            <Badge variant="success"><Shield className="w-2.5 h-2.5" /> End-to-end encrypted</Badge>
+            <Badge variant="success"><Shield className="w-2.5 h-2.5" /> Secure chat</Badge>
           </div>
         </div>
 
-        {/* Messages */}
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
-          {visibleMessages.map((m, i) => {
+          {visibleMessages.map((m) => {
             if (m.sender === "system") {
               return (
-                <div key={i} className="text-center">
+                <div key={m.id} className="text-center">
                   <span className="text-[10px] text-slate-500 bg-white border border-slate-100 px-3 py-1 rounded-full">{m.text}</span>
                 </div>
               );
             }
-            const isParent = m.sender === "parent";
+            const isMe = m.sender === "me";
             return (
-              <div key={i} className={`flex ${isParent ? "justify-end" : "justify-start"}`}>
-                <div className={`max-w-xs lg:max-w-sm ${isParent ? "" : ""}`}>
-                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${isParent ? "bg-indigo-600 text-white rounded-tr-sm" : "bg-white text-slate-800 border border-slate-100 shadow-sm rounded-tl-sm"}`}>
+              <div key={m.id} className={`flex ${isMe ? "justify-end" : "justify-start"}`}>
+                <div className="max-w-xs lg:max-w-sm">
+                  <div className={`px-4 py-2.5 rounded-2xl text-sm leading-relaxed ${isMe ? "bg-indigo-600 text-white rounded-tr-sm" : "bg-white text-slate-800 border border-slate-100 shadow-sm rounded-tl-sm"}`}>
                     {m.text}
                   </div>
-                  <p className={`text-[10px] text-slate-400 mt-1 ${isParent ? "text-right" : ""}`}>{m.time}</p>
+                  <p className={`text-[10px] text-slate-400 mt-1 ${isMe ? "text-right" : ""}`}>{m.time}</p>
                 </div>
               </div>
             );
           })}
         </div>
 
-        {/* Input */}
         <div className="bg-white border-t border-slate-100 p-4">
+          {chatError && <p className="text-xs text-red-600 font-semibold mb-2">{chatError}</p>}
           <div className="flex items-center gap-3">
             <input
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              placeholder="Type a secure message..."
-              className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 bg-slate-50"
+              onKeyDown={(event) => {
+                if (event.key === "Enter") sendBackendMessage();
+              }}
+              placeholder={activeContact.id ? "Type a secure message..." : "No contact selected"}
+              disabled={!activeContact.id}
+              className="flex-1 px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-400 focus:ring-2 focus:ring-indigo-100 bg-slate-50 disabled:opacity-60"
             />
             <button className="w-10 h-10 rounded-xl bg-slate-100 text-slate-400 hover:bg-indigo-50 hover:text-indigo-600 flex items-center justify-center transition-colors">
               <Mic className="w-4 h-4" />
             </button>
             <button
               onClick={sendBackendMessage}
-              className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 transition-colors shadow-sm shadow-indigo-200"
+              disabled={!activeContact.id || !message.trim()}
+              className="w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors shadow-sm shadow-indigo-200"
             >
               <Send className="w-4 h-4" />
             </button>
@@ -2677,8 +3015,6 @@ function MessagingModule({ user }: { user: SafeUser | null }) {
     </div>
   );
 }
-
-// ─── Settings Page ────────────────────────────────────────────────────────────
 
 function SettingsPage({ user, onUserUpdate }: { user: SafeUser | null; onUserUpdate: (user: SafeUser) => void }) {
   const [language, setLanguage] = useState("sq");

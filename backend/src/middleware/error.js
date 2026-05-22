@@ -5,6 +5,10 @@ export function notFoundHandler(req, _res, next) {
 }
 
 export function errorHandler(error, _req, res, _next) {
+  if (!error.status || error.status >= 500) {
+    console.error(error);
+  }
+
   if (error.code === '23505') {
     return res.status(409).json({
       error: {

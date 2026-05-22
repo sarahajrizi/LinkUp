@@ -5,15 +5,19 @@ import { calculatePreventiveRiskScore, riskBand } from '../services/risk.service
 import { buildTimeline } from '../services/timeline.service.js';
 
 async function childRecords(childId) {
-  const [vaccinations, checkups, milestones] = await Promise.all([
+  const [vaccinations, checkups, milestones, appointments, visits] = await Promise.all([
     query('SELECT * FROM vaccinations WHERE child_id = $1 ORDER BY recommended_date ASC', [childId]),
     query('SELECT * FROM checkups WHERE child_id = $1 ORDER BY scheduled_date ASC', [childId]),
     query('SELECT * FROM milestones WHERE child_id = $1 ORDER BY expected_date ASC', [childId]),
+    query(`SELECT a.*, u.name AS provider_name FROM appointments a LEFT JOIN users u ON u.id = a.provider_id WHERE a.child_id = $1 ORDER BY a.scheduled_at ASC`, [childId]),
+    query(`SELECT hv.*, u.name AS nurse_name FROM home_visits hv LEFT JOIN users u ON u.id = hv.nurse_id WHERE hv.child_id = $1 ORDER BY hv.scheduled_at ASC`, [childId]),
   ]);
   return {
     vaccinations: vaccinations.rows,
     checkups: checkups.rows,
     milestones: milestones.rows,
+    appointments: appointments.rows,
+    visits: visits.rows,
   };
 }
 

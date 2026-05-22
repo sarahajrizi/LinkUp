@@ -21,11 +21,26 @@ export async function getAccessibleChild(childId, user) {
   if (user.role === 'doctor') {
     const { rows: assignments } = await query(
       `SELECT 1
-       FROM care_assignments
-       WHERE provider_id = $1
-         AND parent_id = $2
-         AND status = 'active'
-         AND (child_id IS NULL OR child_id = $3)
+       WHERE EXISTS (
+         SELECT 1
+         FROM care_assignments ca
+         WHERE ca.provider_id = $1
+           AND ca.parent_id = $2
+           AND ca.status = 'active'
+           AND (ca.child_id IS NULL OR ca.child_id = $3)
+       )
+       OR EXISTS (
+         SELECT 1
+         FROM home_visits hv
+         WHERE hv.nurse_id = $1
+           AND hv.child_id = $3
+       )
+       OR EXISTS (
+         SELECT 1
+         FROM appointments a
+         WHERE a.provider_id = $1
+           AND a.child_id = $3
+       )
        LIMIT 1`,
       [user.id, child.parent_id, child.id],
     );

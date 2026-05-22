@@ -70,3 +70,42 @@ export async function notifyAppointmentReminder({ parentId, childId, childName, 
     emailSubject: `SAFE reminder: ${childName} - ${label}`,
   });
 }
+
+export async function notifyUserRegistered({ userId, role }) {
+  const isParent = role === 'parent';
+  return notifyUserWithEmail({
+    userId,
+    title: isParent ? 'Welcome to SAFE Family Portal' : 'Welcome to SAFE Provider Portal',
+    body: isParent
+      ? 'Your SAFE parent account was created successfully. You can now add your child profiles, track preventive care, and receive reminders from your assigned nurse.'
+      : 'Your SAFE provider account was created successfully. Once an admin assigns families to you, they will appear in your provider dashboard.',
+    category: 'account',
+    actionUrl: '/settings',
+    emailSubject: isParent ? 'Welcome to SAFE Family Portal' : 'Welcome to SAFE Provider Portal',
+  });
+}
+
+export async function notifyCareAssignmentCreated({ parentId, providerId, childId = null, parentName, providerName, childName = null }) {
+  const childText = childName ? ` for ${childName}` : ' for the family';
+  const parentNotification = await notifyUserWithEmail({
+    userId: parentId,
+    childId,
+    title: 'Nurse assigned',
+    body: `${providerName} has been assigned as your SAFE nurse${childText}. You can now receive appointments, reminders, and secure messages from this care team member.`,
+    category: 'care_assignment',
+    actionUrl: '/messaging',
+    emailSubject: `SAFE nurse assigned: ${providerName}`,
+  });
+
+  const providerNotification = await notifyUserWithEmail({
+    userId: providerId,
+    childId,
+    title: 'New family assigned',
+    body: `${parentName}${childName ? ` (${childName})` : ''} has been assigned to your SAFE provider dashboard. You can now schedule appointments, send reminders, and message the family.`,
+    category: 'care_assignment',
+    actionUrl: '/children',
+    emailSubject: `SAFE new assignment: ${parentName}`,
+  });
+
+  return { parentNotification, providerNotification };
+}
