@@ -27,6 +27,20 @@ jobs:
         with:
           project_id: ${{ env.PROJECT_ID }}
 
+      - name: Validate deployment secrets
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+        run: |-
+          missing=()
+          [ -n "$DATABASE_URL" ] || missing+=("DATABASE_URL")
+          [ -n "$JWT_SECRET" ] || missing+=("JWT_SECRET")
+
+          if [ ${#missing[@]} -gt 0 ]; then
+            echo "::error::Missing required GitHub secrets: ${missing[*]}"
+            exit 1
+          fi
+
       - name: Configure Docker
         run: |-
           gcloud auth configure-docker gcr.io --quiet

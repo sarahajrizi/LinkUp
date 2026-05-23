@@ -1,12 +1,10 @@
-FROM node:18-alpine
+FROM node:20-alpine
 WORKDIR /app
 
-# Install only production deps (no lockfile present)
 COPY package.json ./
-RUN npm install --production --no-progress
+RUN npm install --omit=dev --no-progress
 
-# Copy the app source
-COPY . .
+COPY backend ./backend
 
 ENV NODE_ENV=production
 EXPOSE 8080
