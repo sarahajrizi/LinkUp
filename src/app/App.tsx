@@ -1,15 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  Home, Lock, Heart, Stethoscope, ClipboardList, Activity,
+  Home, LogOut, Heart, Stethoscope, ClipboardList, Activity,
   AlertTriangle, BarChart3, MessageSquare, Settings, Bell,
-  Search, Shield, Baby, CheckCircle2, XCircle, Clock,
+  Search, Shield, Lock, Baby, CheckCircle2, XCircle, Clock,
   ArrowRight, Phone, Wifi, WifiOff, Mic, Send,
-  Plus, Download, User, Menu, X, TrendingUp,
+  Plus, Download, User, X, TrendingUp,
   Globe, Eye, EyeOff, AlertCircle,
   ChevronRight, ChevronDown, Zap, Users, MoreHorizontal,
   Building2, Syringe, Info, Check, RefreshCw, MapPin,
   Star, FileText, Mail, QrCode, ShieldCheck, Fingerprint,
-  CalendarDays, Thermometer, AlertOctagon, ScanLine,
+  CalendarDays, Thermometer, AlertOctagon, ScanLine, Bot,
   Target, BadgeAlert, UserCheck, HeartPulse
 } from "lucide-react";
 import {
@@ -30,6 +30,9 @@ interface NavItem {
   icon: React.ElementType;
   group: string;
 }
+
+//const SAFE_LOGO_SRC = "/safe-logo.svg";
+const SAFE_LOGO_SRC = "/SAFE.png";
 
 const navItems: NavItem[] = [
   { id: "landing", label: "Platform Overview", icon: Home, group: "Explore" },
@@ -113,6 +116,24 @@ function initialsFor(name?: string | null) {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join("") || "SU";
+}
+
+function SafeLogo({
+  className = "h-12 w-auto",
+  compact = false,
+  tone = "default",
+}: {
+  className?: string;
+  compact?: boolean;
+  tone?: "default" | "light";
+}) {
+  return (
+    <img
+      src={SAFE_LOGO_SRC}
+      alt={compact ? "SAFE" : "SAFE Child Health Platform"}
+      className={`${className} object-contain ${tone === "light" ? "brightness-0 invert" : ""}`}
+    />
+  );
 }
 
 function childAgeLabel(dateOfBirth?: string | null) {
@@ -221,14 +242,8 @@ function Sidebar({
       }}
     >
       {/* Logo */}
-      <div className="flex items-center gap-3 px-5 pt-6 pb-5 border-b border-white/10">
-        <div className="w-8 h-8 rounded-lg bg-indigo-400 flex items-center justify-center flex-shrink-0">
-          <Shield className="w-4 h-4 text-white" />
-        </div>
-        <div className="min-w-0">
-          <p className="text-white font-bold text-base leading-none tracking-tight">SAFE</p>
-          <p className="text-indigo-300 text-[10px] mt-0.5 font-medium uppercase tracking-widest truncate">Child Health Platform</p>
-        </div>
+      <div className="flex min-h-[180px] items-center justify-center px-4 py-6 border-b border-white/10">
+        <SafeLogo className="h-36 w-auto max-w-[215px] drop-shadow-[0_0_12px_rgba(167,174,255,0.4)]" tone="light" />
       </div>
 
       {/* Nav */}
@@ -278,7 +293,7 @@ function Sidebar({
             title="Log out"
             className="w-8 h-8 rounded-lg flex items-center justify-center text-indigo-200 hover:bg-white/10 hover:text-white transition-colors"
           >
-            <Lock className="w-4 h-4" />
+            <LogOut className="w-4 h-4" />
           </button>
         )}
       </div>
@@ -289,12 +304,12 @@ function Sidebar({
 // ─── Top bar ────────────────────────────────────────────────────────────────
 
 function TopBar({
-  activePage, sidebarOpen, setSidebarOpen, user,
+  activePage, setActivePage, user, onLogout,
 }: {
   activePage: Page;
-  sidebarOpen: boolean;
-  setSidebarOpen: (v: boolean) => void;
+  setActivePage: (p: Page) => void;
   user: SafeUser | null;
+  onLogout: () => void;
 }) {
   const [notifications, setNotifications] = useState<any[]>([]);
   const [showNotifications, setShowNotifications] = useState(false);
@@ -309,6 +324,9 @@ function TopBar({
     admin: "Admin Dashboard",
     messaging: "Secure Messaging",
     settings: "Settings & Profile",
+    passport: "Health Passport",
+    municipality: "Municipality Monitor",
+    "ai-report": "AI Weekly Report",
   };
 
   useEffect(() => {
@@ -324,52 +342,100 @@ function TopBar({
   const unreadCount = notifications.filter((item) => item.status === "unread").length;
 
   return (
-    <header className="flex-shrink-0 h-14 bg-white border-b border-black/[0.06] flex items-center px-4 gap-4">
-      <button
-        onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors"
-      >
-        <Menu className="w-4 h-4 text-slate-500" />
-      </button>
-      <div className="flex-1">
-        <p className="text-sm font-semibold text-slate-800">{labels[activePage]}</p>
+    <header className="flex-shrink-0 h-20 bg-white border-b border-black/[0.06] flex items-center px-6 gap-4">
+      <div className="flex items-center gap-3 flex-1 min-w-0">
+        {!user ? (
+          <>
+            <button
+              type="button"
+              onClick={() => setActivePage("landing")}
+              className="flex items-center"
+              aria-label="SAFE home"
+            >
+              <SafeLogo className="h-[72px] w-auto" compact />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => setActivePage(defaultPageFor(user))}
+            className="text-sm font-semibold text-slate-800 hover:text-indigo-700 transition-colors"
+          >
+            {labels[activePage]}
+          </button>
+        )}
       </div>
       <div className="flex items-center gap-2">
-        <div className="relative">
-        <button
-          onClick={() => setShowNotifications((value) => !value)}
-          className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors relative"
-        >
-          <Bell className="w-4 h-4 text-slate-500" />
-          {unreadCount > 0 && <span className="absolute top-1 right-1 min-w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">{unreadCount}</span>}
-        </button>
-        {showNotifications && (
-          <div className="absolute right-0 top-10 w-80 bg-white border border-slate-200 rounded-lg shadow-xl z-50 overflow-hidden">
-            <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
-              <p className="text-sm font-bold text-slate-800">Notifications</p>
-              <span className="text-[10px] text-slate-400">{notifications.length} total</span>
-            </div>
-            <div className="max-h-80 overflow-y-auto divide-y divide-slate-50">
-              {notifications.length === 0 && <p className="p-4 text-sm text-slate-500">No notifications yet.</p>}
-              {notifications.slice(0, 8).map((item) => (
-                <div key={item.id} className="p-4 hover:bg-slate-50">
-                  <div className="flex items-start gap-2">
-                    <div className={`mt-1 w-2 h-2 rounded-full ${item.status === "unread" ? "bg-indigo-500" : "bg-slate-300"}`} />
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-800">{item.title}</p>
-                      <p className="text-xs text-slate-500 mt-1 leading-relaxed">{item.body}</p>
-                      {item.due_at && <p className="text-[10px] text-slate-400 mt-1">Due {formatDisplayDate(item.due_at)}</p>}
-                    </div>
+        {user && (
+          <>
+            <div className="relative">
+              <button
+                onClick={() => setShowNotifications((value) => !value)}
+                className="w-8 h-8 flex items-center justify-center rounded-lg hover:bg-slate-100 transition-colors relative"
+              >
+                <Bell className="w-4 h-4 text-slate-500" />
+                {unreadCount > 0 && <span className="absolute top-1 right-1 min-w-4 h-4 rounded-full bg-red-500 text-white text-[9px] font-bold flex items-center justify-center">{unreadCount}</span>}
+              </button>
+              {showNotifications && (
+                <div className="absolute right-0 top-10 w-80 bg-white border border-slate-200 rounded-lg shadow-xl z-50 overflow-hidden">
+                  <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+                    <p className="text-sm font-bold text-slate-800">Notifications</p>
+                    <span className="text-[10px] text-slate-400">{notifications.length} total</span>
+                  </div>
+                  <div className="max-h-80 overflow-y-auto divide-y divide-slate-50">
+                    {notifications.length === 0 && <p className="p-4 text-sm text-slate-500">No notifications yet.</p>}
+                    {notifications.slice(0, 8).map((item) => (
+                      <div key={item.id} className="p-4 hover:bg-slate-50">
+                        <div className="flex items-start gap-2">
+                          <div className={`mt-1 w-2 h-2 rounded-full ${item.status === "unread" ? "bg-indigo-500" : "bg-slate-300"}`} />
+                          <div className="min-w-0">
+                            <p className="text-sm font-semibold text-slate-800">{item.title}</p>
+                            <p className="text-xs text-slate-500 mt-1 leading-relaxed">{item.body}</p>
+                            {item.due_at && <p className="text-[10px] text-slate-400 mt-1">Due {formatDisplayDate(item.due_at)}</p>}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              ))}
+              )}
             </div>
-          </div>
+            <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
+              <span className="text-indigo-700 text-xs font-bold">{initialsFor(user?.name)}</span>
+            </div>
+            <button
+              type="button"
+              onClick={onLogout}
+              title="Log out"
+              className="w-8 h-8 rounded-lg flex items-center justify-center text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+            >
+              <LogOut className="w-4 h-4" />
+            </button>
+          </>
         )}
-        </div>
-        <div className="w-8 h-8 rounded-full bg-indigo-100 flex items-center justify-center">
-          <span className="text-indigo-700 text-xs font-bold">{initialsFor(user?.name)}</span>
-        </div>
+        {!user && (
+          <button
+            type="button"
+            onClick={() => setActivePage(activePage === "login" ? "landing" : "login")}
+            className={`inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold transition-colors ${
+              activePage === "login"
+                ? "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                : "bg-indigo-600 text-white hover:bg-indigo-700"
+            }`}
+          >
+            {activePage === "login" ? (
+              <>
+                <Home className="w-4 h-4" />
+                Platform Overview
+              </>
+            ) : (
+              <>
+                <Lock className="w-4 h-4" />
+                Login / Auth
+              </>
+            )}
+          </button>
+        )}
       </div>
     </header>
   );
@@ -671,9 +737,7 @@ function LoginPage({
       <div className="w-full max-w-md">
         {/* Logo */}
         <div className="text-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-700 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-200">
-            <Shield className="w-7 h-7 text-white" />
-          </div>
+          <SafeLogo className="h-40 w-auto mx-auto mb-5" />
           <h1 className="text-2xl font-bold text-slate-900 mb-1">Sign in to SAFE</h1>
           <p className="text-slate-500 text-sm">Kosovo Child Health Intelligence Platform</p>
         </div>
@@ -814,7 +878,7 @@ function AuthPage({
 
   const roleOptions = [
     { id: "parent", label: "Parent", icon: Heart, demoEmail: "parent@safe.test", loginOnly: false },
-    { id: "doctor", label: "Doctor / Nurse", icon: Stethoscope, demoEmail: "doctor@safe.test", loginOnly: false },
+    { id: "doctor", label: "Nurse", icon: Stethoscope, demoEmail: "doctor@safe.test", loginOnly: false },
     { id: "municipality", label: "Municipality", icon: Building2, demoEmail: "municipality@safe.test", loginOnly: false },
     { id: "admin", label: "Admin", icon: BarChart3, demoEmail: "admin@safe.test", loginOnly: true },
   ] as const;
@@ -877,9 +941,7 @@ function AuthPage({
     <div className="min-h-full bg-gradient-to-br from-slate-50 to-indigo-50/30 flex items-center justify-center p-6">
       <div className="w-full max-w-md">
         <div className="text-center mb-8">
-          <div className="w-14 h-14 rounded-2xl bg-indigo-700 flex items-center justify-center mx-auto mb-4 shadow-lg shadow-indigo-200">
-            <Shield className="w-7 h-7 text-white" />
-          </div>
+          <SafeLogo className="h-40 w-auto mx-auto mb-5" />
           <h1 className="text-2xl font-bold text-slate-900 mb-1">{mode === "login" ? "Sign in to SAFE" : "Create SAFE account"}</h1>
           <p className="text-slate-500 text-sm">Connected to the Express backend with JWT authentication</p>
         </div>
@@ -894,21 +956,24 @@ function AuthPage({
             </button>
           </div>
 
-          <div className="grid grid-cols-2 gap-2 mb-5">
-            {roleOptions.filter((item) => mode === "login" || !item.loginOnly).map((item) => {
-              const Icon = item.icon;
-              return (
-                <button
-                  key={item.id}
-                  onClick={() => selectRole(item.id)}
-                  className={`p-3 rounded-xl border text-center transition-all ${role === item.id ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200"}`}
-                >
-                  <Icon className="w-4 h-4 mx-auto mb-1" />
-                  <span className="text-xs font-bold">{item.label}</span>
-                </button>
-              );
-            })}
-          </div>
+          {mode === "register" && (
+            <div className="grid grid-cols-2 gap-2 mb-5">
+              {roleOptions.filter((item) => !item.loginOnly).map((item) => {
+                const Icon = item.icon;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => selectRole(item.id)}
+                    className={`p-3 rounded-xl border text-center transition-all ${role === item.id ? "border-indigo-300 bg-indigo-50 text-indigo-700" : "border-slate-100 bg-slate-50 text-slate-500 hover:border-slate-200"}`}
+                  >
+                    <Icon className="w-4 h-4 mx-auto mb-1" />
+                    <span className="text-xs font-bold">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           <form onSubmit={submit} className="space-y-3">
             {mode === "register" && (
@@ -959,15 +1024,10 @@ function AuthPage({
             )}
 
             <button type="submit" disabled={isSubmitting} className="w-full bg-indigo-600 text-white font-semibold py-3 rounded-lg disabled:opacity-40 hover:bg-indigo-700 transition-colors text-sm">
-              {isSubmitting ? "Please wait..." : mode === "login" ? "Login with backend" : "Create account"}
+              {isSubmitting ? "Please wait..." : mode === "login" ? "Login" : "Create account"}
             </button>
           </form>
 
-          {mode === "login" && (
-            <div className="mt-4 text-xs text-slate-500 bg-slate-50 border border-slate-100 rounded-lg p-3">
-              Demo password for seeded accounts: <span className="font-semibold text-slate-700">Password123!</span>
-            </div>
-          )}
         </Card>
       </div>
     </div>
@@ -1529,7 +1589,7 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
             {/* Header */}
             <div className="flex items-center gap-3 px-4 py-3 bg-indigo-600">
               <div className="w-8 h-8 rounded-full bg-indigo-400 flex items-center justify-center">
-                <Zap className="w-4 h-4 text-white" />
+                <Bot className="w-4 h-4 text-white" />
               </div>
               <div className="flex-1">
                 <p className="text-sm font-semibold text-white">AI Health Assistant</p>
@@ -1544,7 +1604,7 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
             <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3 bg-slate-50">
               {chatMessages.length === 0 && (
                 <div className="text-center pt-8">
-                  <Zap className="w-10 h-10 text-indigo-200 mx-auto mb-3" />
+                  <Bot className="w-10 h-10 text-indigo-200 mx-auto mb-3" />
                   <p className="text-sm font-semibold text-slate-700">Hi {user?.name?.split(" ")[0] || "there"}!</p>
                   <p className="text-xs text-slate-500 mt-1">Ask me anything about your child's vaccinations, appointments, or milestones.</p>
                   <div className="mt-4 flex flex-col gap-2">
@@ -1615,7 +1675,7 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
           className="w-14 h-14 rounded-full bg-indigo-600 shadow-lg flex items-center justify-center text-white hover:bg-indigo-700 transition-all hover:scale-105 active:scale-95"
           aria-label="Open AI health assistant"
         >
-          {chatOpen ? <X className="w-6 h-6" /> : <Zap className="w-6 h-6" />}
+          {chatOpen ? <X className="w-6 h-6" /> : <Bot className="w-6 h-6" />}
         </button>
       </div>
     </div>
@@ -4615,7 +4675,6 @@ export default function App() {
   if (verifyToken) return <PassportViewer token={verifyToken} />;
 
   const [activePage, setActivePage] = useState<Page>("landing");
-  const [sidebarOpen, setSidebarOpen] = useState(true);
   const [user, setUser] = useState<SafeUser | null>(() => (getStoredToken() ? getStoredUser() : null));
 
   const handleLogout = () => {
@@ -4632,9 +4691,9 @@ export default function App() {
 
   return (
     <div className="flex h-screen bg-background overflow-hidden" style={{ fontFamily: "'Plus Jakarta Sans', system-ui, sans-serif" }}>
-      <Sidebar activePage={activePage} setActivePage={setActivePage} open={sidebarOpen} user={user} onLogout={handleLogout} />
+      {user && <Sidebar activePage={activePage} setActivePage={setActivePage} open user={user} onLogout={handleLogout} />}
       <div className="flex-1 flex flex-col overflow-hidden min-w-0">
-        <TopBar activePage={activePage} sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} user={user} />
+        <TopBar activePage={activePage} setActivePage={setActivePage} user={user} onLogout={handleLogout} />
         <main className="flex-1 overflow-auto">
           {activePage === "landing" && <LandingPage setActivePage={setActivePage} user={user} />}
           {activePage === "login" && <AuthPage setActivePage={setActivePage} onLogin={setUser} />}
