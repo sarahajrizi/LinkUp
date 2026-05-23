@@ -1304,8 +1304,8 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
 
       {overview && (
         <Card className="p-5 mb-6">
-          <div className="flex flex-col md:flex-row md:items-start gap-5">
-            <div>
+          <div className="flex flex-col lg:flex-row lg:flex-wrap lg:items-start gap-5">
+            <div className="min-w-0 flex-1">
               <div className="flex items-start gap-3 mb-3">
                 <Baby className="w-5 h-5 text-indigo-600 mt-0.5" />
                 <div>
@@ -1318,7 +1318,7 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
                   <button
                     key={summary.child.id}
                     onClick={() => setSelectedChildId(summary.child.id)}
-                    className={`px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
+                    className={`max-w-full truncate px-3 py-2 rounded-lg text-xs font-semibold border transition-colors ${
                       selectedChildId === summary.child.id
                         ? "bg-indigo-600 text-white border-indigo-600"
                         : "bg-slate-50 text-slate-600 border-slate-100 hover:border-indigo-200"
@@ -1330,31 +1330,34 @@ function ParentDashboard({ user, onLogout }: { user: SafeUser | null; onLogout: 
                 {overview.children.length === 0 && <p className="text-xs text-slate-500">No child profiles yet.</p>}
               </div>
             </div>
-            <form onSubmit={createChild} className="grid md:grid-cols-4 gap-3 flex-1">
+            <form
+              onSubmit={createChild}
+              className="grid w-full min-w-0 flex-1 grid-cols-1 gap-3 sm:grid-cols-2 xl:min-w-[34rem] xl:grid-cols-[minmax(9rem,1fr)_minmax(9rem,1fr)_minmax(8rem,0.85fr)_auto]"
+            >
               <input
                 value={newChild.fullName}
                 onChange={(event) => setNewChild((value) => ({ ...value, fullName: event.target.value }))}
                 placeholder="Full name"
-                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
+                className="min-w-0 px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
                 required
               />
               <input
                 type="date"
                 value={newChild.dateOfBirth}
                 onChange={(event) => setNewChild((value) => ({ ...value, dateOfBirth: event.target.value }))}
-                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
+                className="min-w-0 px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400"
                 required
               />
               <select
                 value={newChild.gender}
                 onChange={(event) => setNewChild((value) => ({ ...value, gender: event.target.value }))}
-                className="px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 bg-white"
+                className="min-w-0 px-3 py-2.5 border border-slate-200 rounded-lg text-sm focus:outline-none focus:border-indigo-400 bg-white"
               >
                 <option value="female">Female</option>
                 <option value="male">Male</option>
                 <option value="other">Other</option>
               </select>
-              <button className="bg-indigo-600 text-white rounded-lg text-sm font-semibold hover:bg-indigo-700">
+              <button className="min-h-11 whitespace-nowrap bg-indigo-600 text-white rounded-lg px-4 text-sm font-semibold hover:bg-indigo-700 sm:col-span-2 xl:col-span-1">
                 Add child
               </button>
             </form>
