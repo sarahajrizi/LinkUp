@@ -33,7 +33,7 @@ jobs:
 
       - name: Build and Push Container
         run: |-
-          gcloud builds submit ./backend --tag gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA --no-stream
+          gcloud builds submit ./backend --tag gcr.io/$PROJECT_ID/$SERVICE_NAME:$GITHUB_SHA
 
       - name: Deploy to Cloud Run
         uses: google-github-actions/deploy-cloudrun@v2
