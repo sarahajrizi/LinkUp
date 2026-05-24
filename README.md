@@ -163,13 +163,6 @@ The database stores:
 - settings
 - audit logs
 
-## How to Run the Project
-
-### 1. Install dependencies
-
-```bash
-npm install
-
 ### Contributors
 
 This project was developed collaboratively by the team members below:
@@ -181,3 +174,12 @@ This project was developed collaboratively by the team members below:
 - Lerdi Salihi
 
 Each team member contributed to different parts of the project, including frontend development, backend development, database design, AI features, system logic, documentation, and testing.
+
+## How to Run the Project
+
+### 1. Install dependencies
+
+```bash
+npm install
+
+
