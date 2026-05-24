@@ -170,11 +170,11 @@ The database stores:
 ```bash
 npm install
 
-## Contributors
+### Contributors
 
 This project was developed collaboratively by the team members below:
 
-- Sarah Ajrizi
+- Sarah Hajrizi
 - Agnesa Baliu
 - Fatlum Mehmeti
 - Elion Mustafa
